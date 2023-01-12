@@ -620,7 +620,7 @@ class LSEMStateModel(LinearStateModel):
         """
         stats = vmap(self._get_Qz_stats)(smooth_dict, two_step_smooth_dict)
         T, Qz = self._reduce_batch_dims(stats)
-        return Qz / T
+        return .5 * (Qz + Qz.T) / T
     
     def _get_Qz_stats(self,
         smooth_dict: dict,
