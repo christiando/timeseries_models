@@ -115,7 +115,7 @@ class StateSpaceModel:
             Q_list.append(Q_func)
             #Q_list.append(Q_func)
             if iteration > 3:
-                converged = self._check_convergence(Q_func_old, Q_func, conv_crit)
+                converged = self._check_convergence(Q_list[-3], Q_func, conv_crit)
             iteration += 1
             Q_func_old = Q_func
             if iteration % 1 == 0:
