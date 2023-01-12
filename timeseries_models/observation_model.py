@@ -763,7 +763,7 @@ class HCCovObservationModel(LinearObservationModel):
                 return objective(geodesic(t))
             
             converged = False
-            objective_val_old = jnp.inf
+            objective_val_old = 999999
             max_iter = 1000
             num_iter = 0
             while not converged and num_iter < max_iter:
