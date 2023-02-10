@@ -972,7 +972,7 @@ class HCCovObservationModel(LinearObservationModel):
                 geodesic = get_geodesic(U, batch_objective_jit)
                 geo_obj = lambda t: geodesic_objective(t, geodesic, batch_objective_jit)
                 # bounds for numerical stability
-                min_res = minimize_scalar(geo_obj, tol=conv_crit, bounds=[-jnp.pi, jnp.pi])
+                min_res = minimize_scalar(geo_obj, tol=conv_crit, bounds=[0, jnp.pi])
                 opt_t = min_res.x
                 U = geodesic(opt_t)
                 objective_val_new = min_res.fun
@@ -1016,14 +1016,14 @@ class HCCovObservationModel(LinearObservationModel):
 
 
         batch_objective = lambda params, X, smooth_dict: jnp.mean(vmap(objective, in_axes=[None, 0, {'Sigma': 0, 'mu': 0, 'Lambda': 0, 'ln_det_Sigma': 0}])(params, X, smooth_dict))
-        params = {'log_sigma_x': jnp.log(jnp.exp(self.log_sigma_x)),
-                  'y': jnp.log(self.beta - 0.25 * self.sigma_x**2),
+        params = {'log_sigma_x': jnp.log(jnp.exp(self.log_sigma_x) + 1e-10),
+                  'y': jnp.log(self.beta - 0.25 * self.sigma_x**2 + 1e-10) ,
                   'C': self.C,
                   'd': self.d,
                   'W': self.W}
         result  = minimize(batch_objective, params, 'L-BFGS-B', args=(X, smooth_dict))
-        self.log_sigma_x = jnp.log(jnp.exp(result.x['log_sigma_x']))
-        self.log_beta = jnp.log(.25 * jnp.exp(2 * result.x['log_sigma_x']) + jnp.exp(result.x['y']))
+        self.log_sigma_x = jnp.log(jnp.exp(result.x['log_sigma_x']) + 1e-10)
+        self.log_beta = jnp.log(.25 * jnp.exp(2 * result.x['log_sigma_x']) + jnp.exp(result.x['y']) + 1e-10)
         self.C = result.x['C']
         self.d = result.x['d']
         self.W = result.x['W']
