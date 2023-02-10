@@ -972,7 +972,7 @@ class HCCovObservationModel(LinearObservationModel):
                 geodesic = get_geodesic(U, batch_objective_jit)
                 geo_obj = lambda t: geodesic_objective(t, geodesic, batch_objective_jit)
                 # bounds for numerical stability
-                min_res = minimize_scalar(geo_obj, tol=conv_crit, bounds=[-100., 100.])
+                min_res = minimize_scalar(geo_obj, tol=conv_crit, bounds=[-jnp.pi, jnp.pi])
                 opt_t = min_res.x
                 U = geodesic(opt_t)
                 objective_val_new = min_res.fun
