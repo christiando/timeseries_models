@@ -601,6 +601,402 @@ class LRBFMObservationModel(LSEMObservationModel):
         self.mu = result.x['mu']
         self.log_length_scale = result.x['log_length_scale']
         
+        
+class HCCovObservationModel(LinearObservationModel):
+    def __init__(self, Dx: int, Dz: int, Du: int, noise_x: float = 1.0):
+        r"""This class implements a linear observation model, where the observations are generated as
+
+            x_t = C z_t + d + xi_t     with      xi_t ~ N(0,Qx(z_t)),
+
+        where
+
+            Qx(z) = sigma_x^2 I + \sum_i U_i D_i(z) U_i',
+
+        with D_i(z) = 2 * beta_i * cosh(h_i(z)) and h_i(z) = w_i'z + b_i.
+
+        :param Dx: Dimensionality of observations.
+        :type Dx: int
+        :param Dz: Dimensionality of latent space.
+        :type Dz: int
+        :param Du: Number of noise directions.
+        :type Du: int
+        :param noise_x: Intial isoptropic std. on the observations., defaults to 1.0
+        :type noise_x: float, optional
+        """
+        self.update_noise = True
+        assert Dx >= Du
+        self.Dx, self.Dz, self.Du = Dx, Dz, Du
+        if Dx == Dz:
+            # self.C = jnp.eye(Dx)[:,:Dz]
+            self.C = jnp.eye(Dx)
+        else:
+            self.C = jnp.array(np.random.randn(Dx, Dz))
+            self.C = self.C / jnp.sqrt(jnp.sum(self.C**2, axis=0))[None]
+        self.d = jnp.zeros(Dx)
+        rand_mat = np.random.rand(self.Dx, self.Dx) - 0.5
+        Q, R = np.linalg.qr(rand_mat)
+        #self.U = jnp.array(Q[:, : self.Du])
+        self.U = jnp.eye(self.Dx)[:,:self.Du]
+        W = 1e-2 * np.random.randn(self.Du, self.Dz + 1)
+        W[:, 0] = 0
+        self.W = jnp.array(W)
+        self.log_beta = jnp.log(2 * noise_x**2 * jnp.ones(self.Du))
+        self.log_sigma_x = jnp.log(jnp.array([noise_x]))
+        self.observation_density = approximate_conditional.HCCovGaussianConditional(
+            M=jnp.array([self.C]),
+            b=jnp.array([self.d]),
+            sigma_x=self.sigma_x,
+            U=self.U,
+            W=self.W,
+            beta=self.beta,
+        )
+
+    def lin_om_init(self, lin_om: LinearObservationModel):
+        # self.sigma_x = jnp.array([jnp.sqrt(jnp.amin(lin_om.Qx.diagonal()))])
+        beta, U = np.linalg.eig(lin_om.Qx)
+        beta, U = jnp.array(beta), jnp.array(U)
+        if self.Dx != 1:
+            self.U = jnp.real(U[:, : self.Du])
+            # self.beta = jnp.abs(jnp.real(beta[:self.Du]))
+            # self.beta.at[(self.beta / self.sigma_x ** 2) < .5].set(.5 / self.sigma_x ** 2)
+        self.C = lin_om.C
+        self.d = lin_om.d
+        self.update_observation_density()
+
+    def pca_init(self, X: jnp.ndarray, smooth_window: int = 10):
+        r"""Set the model parameters to an educated initial guess, based on principal component analysis.
+
+        More specifically `d` is set to the mean of the data and `C` to the first principal components
+        of the (smoothed) data.
+        Then `U` is initialized with the first pricinpal components of the empirical covariance of the
+        residuals.
+
+        :param X: Observations. Dimensions should be [T, Dx]
+        :type X: jnp.ndarray
+        :param smooth_window: Width of the box car filter data are smoothed with., defaults to 10
+        :type smooth_window: int, optional
+        """
+        self.d = jnp.mean(X, axis=0)
+        T = X.shape[0]
+        X_smoothed = np.empty(X.shape)
+        for i in range(X.shape[1]):
+            X_smoothed[:, i] = np.convolve(
+                X[:, i], np.ones(smooth_window) / smooth_window, mode="same"
+            )
+        eig_vals, eig_vecs = scipy.linalg.eigh(
+            jnp.dot((X_smoothed - self.d[None]).T, X_smoothed - self.d[None]),
+            eigvals=(self.Dx - np.amin([self.Dz, self.Dx]), self.Dx - 1),
+        )
+        C = np.array(self.C)
+        C[:, : np.amin([self.Dz, self.Dx])] = eig_vecs * eig_vals / T
+        self.C = jnp.array(self.C)
+        z_hat = jnp.dot(jnp.linalg.pinv(self.C), (X_smoothed - self.d).T).T
+        delta_X = X - jnp.dot(z_hat, self.C.T) - self.d
+        cov = jnp.dot(delta_X.T, delta_X)
+        self.U = jnp.array(
+            scipy.linalg.eigh(cov, eigvals=(self.Dx - self.Du, self.Dx - 1))[1]
+        )
+        self.observation_density = approximate_conditional.HCCovGaussianConditional(
+            M=jnp.array([self.C]),
+            b=jnp.array([self.d]),
+            sigma_x=self.sigma_x,
+            U=self.U,
+            W=self.W,
+            beta=self.beta,
+        )
+        
+    def compute_Q_function(
+        self, smoothing_density: pdf.GaussianPDF, X: jnp.ndarray, z_samples=None, **kwargs
+    ) -> float:
+        return jnp.sum(
+            self.observation_density.integrate_log_conditional_y(smoothing_density, y=X, x_samples=z_samples)
+        )
+        
+    @property
+    def beta(self):
+        return jnp.exp(self.log_beta)
+        
+    @property
+    def sigma_x(self):
+        return jnp.exp(self.log_sigma_x)
+
+    def update_hyperparameters(
+        self, X: jnp.ndarray, smooth_dict: dict, **kwargs
+    ):
+        """Update hyperparameters.
+
+        :param smoothing_density: The smoothing density over the latent space.
+        :type smoothing_density: pdf.GaussianPDF
+        :param X: Observations. Dimensions should be [T, Dx]
+        :type X: jnp.ndarray
+        :raises NotImplementedError: Must be implemented.
+        """
+    
+        #if self.update_noise:
+        #    self._update_euclid_params2(X, smooth_dict)
+        #else:
+        self._update_euclid_params(X, smooth_dict)
+        self.update_noise = not self.update_noise
+        if self.Dx > 1:
+            self._update_stiefel_params(X, smooth_dict)
+
+    def update_observation_density(self):
+        """Updates the emission density."""
+        self.observation_density = approximate_conditional.HCCovGaussianConditional(
+            M=jnp.array([self.C]),
+            b=jnp.array([self.d]),
+            sigma_x=self.sigma_x,
+            U=self.U,
+            W=self.W,
+            beta=self.beta,
+        )
+        
+    def sample_smoothing_density(self, X, smooth_dict):
+        T = X.shape[0]
+        key = random.PRNGKey(42)
+        N = 1000
+        smoothing_density = pdf.GaussianPDF(**smooth_dict).slice(jnp.arange(1, T + 1))
+        z_samples = smoothing_density.sample(key, N)
+        return z_samples
+        
+
+    def _update_stiefel_params(self, X: jnp.ndarray, smooth_dict: dict, conv_crit: float=1e-4):
+        
+        def objective(U, X, smooth_dict):
+            T = X.shape[0]
+            smoothing_density = pdf.GaussianPDF(**smooth_dict).slice(jnp.arange(1, T + 1))
+            self.observation_density.U = U
+            return -self.compute_Q_function(smoothing_density, X)
+        
+        U = self.U
+        batch_objective = lambda params, X, smooth_dict: jnp.mean(vmap(objective, in_axes=[None, 0, {'Sigma': 0, 'mu': 0, 'Lambda': 0, 'ln_det_Sigma': 0}])(params, X, smooth_dict))
+        batch_objective_jit = jit(lambda U: batch_objective(U, X, smooth_dict))
+        if self.Du > 1:
+            def get_geodesic(U, objective):
+                euclid_dU = grad(objective)(U)
+                tangent = jnp.dot(U.T, euclid_dU) - jnp.dot(euclid_dU.T, U)
+                geodesic = lambda t: jnp.dot(U, jsc.linalg.expm(t * tangent))
+                return geodesic
+            
+            def geodesic_objective(t, geodesic, objective):
+                return objective(geodesic(t))
+            
+            converged = False
+            objective_val_old = 999999
+            max_iter = 1000
+            num_iter = 0
+            while not converged and num_iter < max_iter:
+                geodesic = get_geodesic(U, batch_objective_jit)
+                geo_obj = lambda t: geodesic_objective(t, geodesic, batch_objective_jit)
+                # bounds for numerical stability
+                min_res = minimize_scalar(geo_obj, tol=conv_crit, bounds=[0, jnp.pi])
+                opt_t = min_res.x
+                U = geodesic(opt_t)
+                objective_val_new = min_res.fun
+                converged = self._check_convergence(objective_val_old, objective_val_new, conv_crit)
+                objective_val_old = objective_val_new
+                num_iter += 1
+        else:
+            def normed_objective(U_unnormed):
+                U = U_unnormed / jnp.linalg.norm(U_unnormed, axis=0)
+                return batch_objective_jit(U)
+            
+            result  = minimize(normed_objective, U, 'L-BFGS-B')
+            U_unnormed = result.x
+            U = U_unnormed / jnp.linalg.norm(U_unnormed, axis=0) 
+        if jnp.logical_not(jnp.any(jnp.isnan(U))):
+            self.U = U
+        self.update_observation_density()
+            
+            
+    @staticmethod
+    def _check_convergence(Q_old, Q_new: float, conv_crit: float) -> bool:
+        conv = jnp.abs(Q_old - Q_new) / jnp.amax(
+                    jnp.array(
+                        [1, jnp.abs(Q_old), jnp.abs(Q_new)]
+                    )
+                )
+        return conv < conv_crit
+    
+    def _update_euclid_params(self, X, smooth_dict):
+
+        def objective(params, X, smooth_dict):
+            T = X.shape[0]
+            smoothing_density = pdf.GaussianPDF(**smooth_dict).slice(jnp.arange(1, T + 1))
+            self.observation_density.M = jnp.array([params['C']])
+            self.observation_density.b = jnp.array([params['d']])
+            self.observation_density.W = params['W']
+            self.observation_density.sigma_x = jnp.exp(params['log_sigma_x'])
+            self.observation_density.sigma2_x = (jnp.exp(params['log_sigma_x'])) ** 2
+            self.observation_density.beta = .25 * jnp.exp(2 * params['log_sigma_x']) + jnp.exp(params['y'])
+            return -self.compute_Q_function(smoothing_density, X)
+        
+
+
+        batch_objective = lambda params, X, smooth_dict: jnp.mean(vmap(objective, in_axes=[None, 0, {'Sigma': 0, 'mu': 0, 'Lambda': 0, 'ln_det_Sigma': 0}])(params, X, smooth_dict))
+        params = {'log_sigma_x': jnp.log(jnp.exp(self.log_sigma_x) + 1e-10),
+                  'y': jnp.log(self.beta - 0.25 * self.sigma_x**2 + 1e-10) ,
+                  'C': self.C,
+                  'd': self.d,
+                  'W': self.W}
+        result  = minimize(batch_objective, params, 'L-BFGS-B', args=(X, smooth_dict))
+        self.log_sigma_x = jnp.log(jnp.exp(result.x['log_sigma_x']) + 1e-10)
+        self.log_beta = jnp.log(.25 * jnp.exp(2 * result.x['log_sigma_x']) + jnp.exp(result.x['y']) + 1e-10)
+        self.C = result.x['C']
+        self.d = result.x['d']
+        self.W = result.x['W']
+        self.update_observation_density()
+
+    
+    def _update_euclid_params2(self, X, smooth_dict):
+        def objective(params, X, smooth_dict):
+            T = X.shape[0]
+            smoothing_density = pdf.GaussianPDF(**smooth_dict).slice(jnp.arange(1, T + 1))
+            self.observation_density.M = jnp.array([params['C']])
+            self.observation_density.b = jnp.array([params['d']])
+            #self.observation_density.W = params['W']
+            #self.observation_density.sigma_x = jnp.exp(params['log_sigma_x'])
+            #self.observation_density.beta = .25 * jnp.exp(2 * params['log_sigma_x']) + params['y'] ** 2
+            return -self.compute_Q_function(smoothing_density, X)
+
+        batch_objective = lambda params, X, smooth_dict: jnp.mean(vmap(objective, in_axes=[None, 0, {'Sigma': 0, 'mu': 0, 'Lambda': 0, 'ln_det_Sigma': 0}])(params, X, smooth_dict))
+        params = {
+                'C': self.C,
+                'd': self.d,}
+        result  = minimize(batch_objective, params, 'L-BFGS-B', args=(X, smooth_dict))
+        self.C = result.x['C']
+        self.d = result.x['d']
+        self.update_observation_density()
+        
+
+class HeteroscedasticObservationModel(LinearObservationModel):
+    
+    def __init__(self, Dx: int, Dz: int, Da: int, Dk: int, link_function: str = 'exp'):
+        r"""This class implements a linear observation model, where the observations are generated as
+
+            x_t = C z_t + d + xi_t     with      xi_t ~ N(0,Qx(z_t)),
+
+        where
+
+            Qx(z) = sigma_x^2 I + \sum_i U_i D_i(z) U_i',
+
+        with D_i(z) = 2 * beta_i * cosh(h_i(z)) and h_i(z) = w_i'z + b_i.
+
+        :param Dx: Dimensionality of observations.
+        :type Dx: int
+        :param Dz: Dimensionality of latent space.
+        :type Dz: int
+        :param Dk: Number of noise directions.
+        :type Dk: int
+        :param noise_x: Intial isoptropic std. on the observations., defaults to 1.0
+        :type noise_x: float, optional
+        """
+        
+        assert Da >= Dx
+        assert Da >= Dk
+        self.Dx, self.Dz, self.Da, self.Dk = Dx, Dz, Da, Dk
+        self.link_function = link_function
+        if Dx == Dz:
+            self.C = jnp.eye(Dx)
+        else:
+            self.C = jnp.array(np.random.randn(Dx, Dz))
+            self.C = self.C / jnp.sqrt(jnp.sum(self.C**2, axis=0))[None]
+
+        self.d = jnp.zeros(Dx)
+        if link_function == 'cosh_m1':
+            self.A = jnp.concatenate([jnp.ones((self.Dx, Da-self.Dx)), jnp.eye(Dx)], axis=1)
+        else:
+            self.A = jnp.concatenate([jnp.array(1e-2 * np.random.randn(self.Dx, Da-self.Dx)), jnp.eye(Dx)], axis=1)
+        
+        self.A = jnp.concatenate([jnp.array(1e-2*np.random.randn(Dx, Da-Dx)), jnp.eye(Dx)], axis=1)
+        W = 1e-2 * np.random.randn(self.Dk, self.Dz + 1)
+        W[:, 0] = 0
+        self.W = jnp.array(W)
+        self.update_observation_density()
+        
+    @classmethod
+    def from_linear_model(cls, lin_om: LinearObservationModel, Da: int, Dk: int, link_function: str = 'exp') -> 'HeteroscedasticObservationModel':
+        model = cls(lin_om.Dx, lin_om.Dz, Da, Dk, link_function)
+        L = jnp.linalg.cholesky(lin_om.Qx)
+        if link_function == 'cosh_m1':
+            model.A = jnp.concatenate([jnp.ones((model.Dx, Da-model.Dx)), L], axis=1)
+        else:
+            model.A = jnp.concatenate([jnp.array(1e-2 * np.random.randn(model.Dx, Da-model.Dx)), jnp.sqrt(.5) *  L], axis=1)
+        model.C = lin_om.C
+        model.d = lin_om.d
+        W = 1e-2 * np.random.randn(model.Dk, model.Dz + 1)
+        #W[:, 0] = 0
+        model.W = jnp.array(W)
+        model.update_observation_density()
+        return model
+        
+    def update_observation_density(self):
+        """Updates the emission density."""
+        if self.link_function == 'exp':
+            self.observation_density = approximate_conditional.HeteroscedasticExpConditional(
+                M=jnp.array([self.C]),
+                b=jnp.array([self.d]),
+                A=jnp.array([self.A]),
+                W=self.W,
+            )
+        elif self.link_function == 'cosh_m1':
+            self.observation_density = approximate_conditional.HeteroscedasticCoshM1Conditional(
+                M=jnp.array([self.C]),
+                b=jnp.array([self.d]),
+                A=jnp.array([self.A]),
+                W=self.W,
+            )
+        else:
+            raise NotImplementedError(f'Link function {self.link_function} not implemented.')
+        
+    def update_hyperparameters(
+        self, X: jnp.ndarray, smooth_dict: dict, **kwargs
+    ):
+        """Update hyperparameters.
+
+        :param smoothing_density: The smoothing density over the latent space.
+        :type smoothing_density: pdf.GaussianPDF
+        :param X: Observations. Dimensions should be [T, Dx]
+        :type X: jnp.ndarray
+        :raises NotImplementedError: Must be implemented.
+        """
+        
+        self._update_euclid_params(X, smooth_dict)
+
+            
+    def _update_euclid_params(self, X, smooth_dict):
+        def objective(params, X, smooth_dict):
+            T = X.shape[0]
+            smoothing_density = pdf.GaussianPDF(**smooth_dict).slice(jnp.arange(1, T + 1))
+            self.C = params['C']
+            self.d = params['d']
+            self.A = params['A']
+            self.W = params['W']
+            self.update_observation_density()
+            return -self.compute_Q_function(smoothing_density, X)
+
+        batch_objective = lambda params, X, smooth_dict: jnp.mean(vmap(objective, in_axes=[None, 0, {'Sigma': 0, 'mu': 0, 'Lambda': 0, 'ln_det_Sigma': 0}])(params, X, smooth_dict))
+        params = {'C': self.C,
+                  'd': self.d,
+                  'A': self.A,
+                  'W': self.W}
+        
+        result  = minimize(batch_objective, params, 'L-BFGS-B', args=(X, smooth_dict))
+        print(f"ACd:{result.success}")
+        if result.success:
+            self.C = result.x['C']
+            self.d = result.x['d']
+            self.A = result.x['A']
+            self.W = result.x['W']
+        else:
+            self.C = params['C']
+            self.d = params['d']
+            self.A = params['A']
+            self.W = params['W']
+        self.update_observation_density()
+        
+        
+        
 '''        
 class HCCovObservationModel(LinearObservationModel):
     def __init__(self, Dx: int, Dz: int, Du: int, noise_x: float = 1.0):
@@ -987,7 +1383,8 @@ class HCCovObservationModel(LinearObservationModel):
             result  = minimize(normed_objective, U, 'L-BFGS-B')
             U_unnormed = result.x
             U = U_unnormed / jnp.linalg.norm(U_unnormed, axis=0) 
-        self.U = U
+        if jnp.logical_not(jnp.any(jnp.isnan(U))):
+            self.U = U
         self.update_observation_density()
             
             
@@ -1050,7 +1447,7 @@ class HCCovObservationModel(LinearObservationModel):
         self.d = result.x['d']
         self.update_observation_density()
         
-'''   
+
 class FullHCCovObservationModel(HCCovObservationModel):
     
     def __init__(self, Dx: int, Dz: int, Du: int, noise_x: float = 1.0):
@@ -1085,25 +1482,30 @@ class FullHCCovObservationModel(HCCovObservationModel):
         self.d = jnp.zeros(Dx)
         rand_mat = np.random.rand(self.Dx, self.Dx) - 0.5
         Q, R = np.linalg.qr(rand_mat)
-        #self.U = jnp.array(Q[:, : self.Du])
-        self.U = jnp.eye(self.Dx)[:,:self.Du]
-        W = 1e-2 * np.random.randn(self.Du, self.Dz + 1)
+        self.U = jnp.array(Q[:, : self.Du])
+        #self.U = jnp.eye(self.Dx)[:,:self.Du]
+        W = 1e-4 * np.random.randn(self.Du, self.Dz + 1)
         W[:, 0] = 0
         self.W = jnp.array(W)
         self.log_beta = jnp.log(jnp.ones(self.Du))#jnp.log(2 * noise_x**2 * jnp.ones(self.Du))
-        self.Qx = .1**2 * jnp.eye(self.Dx)
+        self.Qx = jnp.eye(self.Dx)
+        rand_arr = 1e-3 * jnp.array(np.random.randn(self.Dx, self.Dx))
+        self.Qx += rand_arr @ rand_arr.T
         self.observation_density = approximate_conditional.FullHCCovGaussianConditional(
             M=jnp.array([self.C]),
             b=jnp.array([self.d]),
             Sigma=jnp.array([self.Qx]),
             U=self.U,
             W=self.W,
-            beta=self.beta,
         )
-        self.Qx_inv, self.ln_det_Qx = (
-            self.observation_density.Lambda[0],
-            self.observation_density.ln_det_Sigma[0],
-        )
+        self.triu_idx = jnp.triu_indices(self.Dx)
+        self.L_x = self.observation_density.L[0][self.triu_idx]
+        self.L_inv_x = self.observation_density.L_inv[0][self.triu_idx]
+        #self.Qx_inv, self.ln_det_Qx = (
+        #    self.observation_density.Lambda[0],
+        #    self.observation_density.ln_det_Sigma[0],
+        #)
+        
 
     def lin_om_init(self, lin_om: LinearObservationModel):
         # self.sigma_x = jnp.array([jnp.sqrt(jnp.amin(lin_om.Qx.diagonal()))])
@@ -1113,9 +1515,9 @@ class FullHCCovObservationModel(HCCovObservationModel):
             self.U = jnp.real(U[:, : self.Du])
             # self.beta = jnp.abs(jnp.real(beta[:self.Du]))
             # self.beta.at[(self.beta / self.sigma_x ** 2) < .5].set(.5 / self.sigma_x ** 2)
-        #self.C = lin_om.C
-        #self.d = lin_om.d
-        self.Qx = lin_om.Qx
+        self.C = lin_om.C
+        self.d = lin_om.d
+        self.Qx = jnp.diag(jnp.diag(lin_om.Qx))
         self.update_observation_density()
         
     def update_observation_density(self):
@@ -1126,12 +1528,13 @@ class FullHCCovObservationModel(HCCovObservationModel):
             Sigma=jnp.array([self.Qx]),
             U=self.U,
             W=self.W,
-            beta=self.beta,
         )
-        self.Qx_inv, self.ln_det_Qx = (
-            self.observation_density.Lambda[0],
-            self.observation_density.ln_det_Sigma[0],
-        )
+        self.L_x = self.observation_density.L[0][self.triu_idx]
+        self.L_inv_x = self.observation_density.L_inv[0][self.triu_idx]
+        #self.Qx_inv, self.ln_det_Qx = (
+        #    self.observation_density.Lambda[0],
+        #    self.observation_density.ln_det_Sigma[0],
+        #)
         
     def update_hyperparameters(
         self, X: jnp.ndarray, smooth_dict: dict, **kwargs
@@ -1145,47 +1548,144 @@ class FullHCCovObservationModel(HCCovObservationModel):
         :raises NotImplementedError: Must be implemented.
         """
         
+        #if self.update_noise:
+        #    self._update_Qx(X, smooth_dict)
+        #    print(self.Qx)
+        #else:
+        """
         if self.update_noise % 3 == 0:
-            self._update_Qx(X, smooth_dict)
-            print(self.Qx)
-        elif self.update_noise % 3 == 1:
             self._update_euclid_params(X, smooth_dict)
-            print(self.W)
-            print(self.beta)
-        elif self.update_noise % 3 == 2:
+            print("Updated C,d")
+            if self.Dx > 1:
+                self._update_stiefel_params(X, smooth_dict)
+                print(self.U)
+        elif self.update_noise % 3 == 1:
             self._update_euclid_params2(X, smooth_dict)
+            print("Updated W")
+        elif self.update_noise % 3 == 2:
+            print("Updated L")
+            self._update_euclid_params3(X, smooth_dict)
+            print(self.L_x)
+            self.update_noise += 1
+        """
+        
+        
+        self._update_euclid_params(X, smooth_dict)
+        self._update_euclid_params2(X, smooth_dict)
+        self._update_euclid_params3(X, smooth_dict)
+        print(self.L_x)
         if self.Dx > 1:
             self._update_stiefel_params(X, smooth_dict)
-        self.update_noise += 1
 
-        
-    def _update_Qx(self, X, smooth_dict):
-        Qx_batch = jit(vmap(self.get_Sigma_stats, in_axes=[0, {'Sigma': 0, 'mu': 0, 'Lambda': 0, 'ln_det_Sigma': 0}]))(X, smooth_dict)
-        self.Qx = jnp.mean(Qx_batch, axis=0)
-        print(self.Qx)
-        self.update_observation_density()
-        
-    def get_Sigma_stats(self, X, smooth_dict):
-        T = X.shape[0]
-        smoothing_density = pdf.GaussianPDF(**smooth_dict).slice(jnp.arange(1, T + 1))
-        Qx_batch = self.observation_density.get_Sigma_stats(smoothing_density, X) / T
-        return Qx_batch
             
     def _update_euclid_params(self, X, smooth_dict):
+        def objective(params, X, smooth_dict):
+            T = X.shape[0]
+            smoothing_density = pdf.GaussianPDF(**smooth_dict).slice(jnp.arange(1, T + 1))
+            #L_flatten = params['L']
+            #L = jnp.zeros((self.Dx, self.Dx))
+            #L = L.at[self.triu_idx].set(L_flatten)
+            self.observation_density.M = jnp.array([params['C']])
+            self.observation_density.b = jnp.array([params['d']])
+            #self.observation_density.update_chol(jnp.array([L]))
+            #self.observation_density.W = params['W']
+            return -self.compute_Q_function(smoothing_density, X)
+
+        batch_objective = lambda params, X, smooth_dict: jnp.mean(vmap(objective, in_axes=[None, 0, {'Sigma': 0, 'mu': 0, 'Lambda': 0, 'ln_det_Sigma': 0}])(params, X, smooth_dict))
+        params = {'C': self.C,
+                  'd': self.d,}
+                  #'L': self.L_x}
+        result  = minimize(batch_objective, params, 'L-BFGS-B', args=(X, smooth_dict))
+        print(result.success)
+       # self.log_beta = jnp.log(.25 + jnp.exp(result.x['y']) + 1e-10)
+        if result.success:
+            self.C = result.x['C']
+            self.d = result.x['d']  
+        self.update_observation_density()
+        #self.C = result.x['C']
+        #self.d = result.x['d']
+        #self.L_x = result.x['L']
+        #L = jnp.zeros((self.Dx, self.Dx))
+        #L = L.at[self.triu_idx].set(self.L_x)
+        #self.Qx = jnp.einsum("bc,dc->bd", L, L)
+        #self.update_observation_density()
+        
+    def _update_euclid_params2(self, X, smooth_dict):
         def objective(params, X, smooth_dict):
             T = X.shape[0]
             smoothing_density = pdf.GaussianPDF(**smooth_dict).slice(jnp.arange(1, T + 1))
             #self.observation_density.M = jnp.array([params['C']])
             #self.observation_density.b = jnp.array([params['d']])
             self.observation_density.W = params['W']
-            self.observation_density.beta = jnp.exp(params['y']) + .25
+            #L_flatten = params['L']
+            #L = jnp.zeros((self.Dx, self.Dx))
+            #L = L.at[self.triu_idx].set(L_flatten)
+            #self.observation_density.update_chol(jnp.array([L]))
             return -self.compute_Q_function(smoothing_density, X)
 
         batch_objective = lambda params, X, smooth_dict: jnp.mean(vmap(objective, in_axes=[None, 0, {'Sigma': 0, 'mu': 0, 'Lambda': 0, 'ln_det_Sigma': 0}])(params, X, smooth_dict))
-        params = {'y': jnp.log(self.beta - 0.25 + 1e-10),
+        params = {#'C': self.C,
+                  #'d': self.d,
                   'W': self.W}
         result  = minimize(batch_objective, params, 'L-BFGS-B', args=(X, smooth_dict))
-        self.log_beta = jnp.log(.25 + jnp.exp(result.x['y']) + 1e-10)
-        self.W = result.x['W']
+        print(result.success)
+        if result.success:
+            self.W = result.x['W']
         self.update_observation_density()
-'''
+        
+        print(result.success)
+       # self.log_beta = jnp.log(.25 + jnp.exp(result.x['y']) + 1e-10)
+        #self.C = result.x['C']
+        #self.d = result.x['d']
+        
+        #self.L_x = result.x['L']
+        #Qx_old = jnp.copy(self.Qx)
+        #L = jnp.zeros((self.Dx, self.Dx))
+        #L = L.at[self.triu_idx].set(self.L_x)
+        #self.Qx = jnp.einsum("bc,dc->bd", L, L)
+        #assert jnp.allclose(self.Qx, Qx_old)
+        #print(Qx_old)
+        #print(self.Qx)
+        self.update_observation_density()
+        
+    def _update_euclid_params3(self, X, smooth_dict):
+        def objective(params, X, smooth_dict):
+            T = X.shape[0]
+            smoothing_density = pdf.GaussianPDF(**smooth_dict).slice(jnp.arange(1, T + 1))
+            #self.observation_density.M = jnp.array([params['C']])
+            #self.observation_density.b = jnp.array([params['d']])
+            #self.observation_density.W = params['W']
+            L_flatten = params['L']
+            L = jnp.zeros((self.Dx, self.Dx))
+            L = L.at[self.triu_idx].set(L_flatten)
+            #L = jnp.diag(L_flatten)
+            self.observation_density.update_chol(jnp.array([L]))
+            return -self.compute_Q_function(smoothing_density, X)
+
+        batch_objective = lambda params, X, smooth_dict: jnp.mean(vmap(objective, in_axes=[None, 0, {'Sigma': 0, 'mu': 0, 'Lambda': 0, 'ln_det_Sigma': 0}])(params, X, smooth_dict))
+        params = {#'C': self.C,
+                  #'d': self.d,
+                  #'W': self.W,
+                  'L': self.L_x}
+        result  = minimize(batch_objective, params, 'L-BFGS-B', args=(X, smooth_dict))
+        print(result.success)
+        if result.success:
+            self.L_x = result.x['L']
+            #Qx_old = jnp.copy(self.Qx)
+            L = jnp.zeros((self.Dx, self.Dx))
+            L = L.at[self.triu_idx].set(self.L_x)
+            self.Qx = jnp.einsum("bc,dc->bd", L, L)
+            #self.Qx = jnp.diag(self.L_x ** 2)
+        
+        self.update_observation_density()
+        print(result.success)
+       # self.log_beta = jnp.log(.25 + jnp.exp(result.x['y']) + 1e-10)
+        #self.C = result.x['C']
+        #self.d = result.x['d']
+        
+        
+        #self.Qx = jnp.einsum("bc,dc->bd", L, L)
+        #assert jnp.allclose(self.Qx, Qx_old)
+        #print(Qx_old)
+        #print(self.Qx)
+        self.update_observation_density()

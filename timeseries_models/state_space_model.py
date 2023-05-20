@@ -107,15 +107,15 @@ class StateSpaceModel:
             smooth_dict, two_step_smooth_dict = self.estep(X, mu0, Sigma0, control_x, control_z)
             etime = time.perf_counter() - time_start_total
             time_start = time.perf_counter()
-            mu0, Sigma0 = self.mstep(X, smooth_dict, two_step_smooth_dict, control_x, control_z)
-            mtime = time.perf_counter() - time_start
-            time_start = time.perf_counter()
             Q_func = self.compute_Q_function(X, smooth_dict, two_step_smooth_dict, mu0, Sigma0, control_x, control_z)
             Q_time = time.perf_counter() - time_start
+            time_start = time.perf_counter()
+            mu0, Sigma0 = self.mstep(X, smooth_dict, two_step_smooth_dict, control_x, control_z)
+            mtime = time.perf_counter() - time_start
             Q_list.append(Q_func)
             #Q_list.append(Q_func)
-            if iteration > 3:
-                converged = self._check_convergence(Q_list[-3], Q_func, conv_crit)
+            if iteration > 2:
+                converged = self._check_convergence(Q_list[-2], Q_func, conv_crit)
             iteration += 1
             Q_func_old = Q_func
             if iteration % 1 == 0:
