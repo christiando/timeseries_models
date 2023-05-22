@@ -485,6 +485,7 @@ class StateSpaceModel:
                 z_old, vars_t, observed_dims, unobserved_dims
             )
         )
+        # TODO: fix this
         rand_nums_z = objax.random.normal((T, num_samples, self.Dz))
         rand_nums_x = objax.random.normal((T, num_samples, num_unobserved_dims))
 
