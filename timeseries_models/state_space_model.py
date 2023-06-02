@@ -92,7 +92,7 @@ class StateSpaceModel:
                 )
         return jnp.abs(conv) < conv_crit
     
-    def fit(self, X: jnp.ndarray, control_x: jnp.ndarray=None, control_z: jnp.ndarray=None, max_iter: int=50, conv_crit: float=1e-3, timeit: bool=False):
+    def fit(self, X: jnp.ndarray, control_x: jnp.ndarray=None, control_z: jnp.ndarray=None, max_iter: int=100, conv_crit: float=1e-3, timeit: bool=False):
         """Fits the expectation-maximization algorithm.
 
         Runs until convergence or maximal number of iterations is reached.

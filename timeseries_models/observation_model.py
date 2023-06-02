@@ -905,14 +905,30 @@ class HeteroscedasticObservationModel(LinearObservationModel):
         self.d = jnp.zeros(Dx)
         if link_function == 'cosh_m1':
             self.A = jnp.concatenate([jnp.ones((self.Dx, Da-self.Dx)), jnp.eye(Dx)], axis=1)
+        elif link_function == 'heaviside' or link_function == 'ReLU':
+            self.A = jnp.concatenate([jnp.array(1e-2 * np.random.randn(self.Dx, Da-self.Dx)),jnp.eye(Dx)], axis=1)
+        elif link_function == 'ReLU':
+            self.A = jnp.concatenate([jnp.ones((self.Dx, Da-self.Dx)),jnp.eye(Dx)], axis=1)
         else:
             self.A = jnp.concatenate([jnp.array(1e-2 * np.random.randn(self.Dx, Da-self.Dx)), jnp.eye(Dx)], axis=1)
         
         self.A = jnp.concatenate([jnp.array(1e-2*np.random.randn(Dx, Da-Dx)), jnp.eye(Dx)], axis=1)
-        W = 1e-2 * np.random.randn(self.Dk, self.Dz + 1)
-        W[:, 0] = 0
+        if link_function == 'heaviside':
+            W = 10. * np.random.randn(self.Dk, self.Dz + 1)
+            W[:, 0] /= 10.
+        elif link_function == 'ReLU':
+            W = np.random.randn(self.Dk, self.Dz + 1)
+        else:
+            W = 1e-1 * np.random.randn(self.Dk, self.Dz + 1)
         self.W = jnp.array(W)
         self.update_observation_density()
+        
+    @property
+    def observation_density_dict(self) -> dict:
+        return {'cosh_m1': approximate_conditional.HeteroscedasticCoshM1Conditional,
+                 'exp': approximate_conditional.HeteroscedasticExpConditional,
+                 'heaviside': approximate_conditional.HeteroscedasticHeavisideConditional,
+                 'ReLU': approximate_conditional.HeteroscedasticReLUConditional}
         
     @classmethod
     def from_linear_model(cls, lin_om: LinearObservationModel, Da: int, Dk: int, link_function: str = 'exp') -> 'HeteroscedasticObservationModel':
@@ -920,6 +936,8 @@ class HeteroscedasticObservationModel(LinearObservationModel):
         L = jnp.linalg.cholesky(lin_om.Qx)
         if link_function == 'cosh_m1':
             model.A = jnp.concatenate([jnp.ones((model.Dx, Da-model.Dx)), L], axis=1)
+        elif link_function == 'heavyside' or link_function == 'ReLU':
+            model.A = jnp.concatenate([jnp.array(1e-2 * np.random.randn(model.Dx, Da-model.Dx)), jnp.sqrt(.5) *  L], axis=1)
         else:
             model.A = jnp.concatenate([jnp.array(1e-2 * np.random.randn(model.Dx, Da-model.Dx)), jnp.sqrt(.5) *  L], axis=1)
         model.C = lin_om.C
@@ -932,21 +950,14 @@ class HeteroscedasticObservationModel(LinearObservationModel):
         
     def update_observation_density(self):
         """Updates the emission density."""
-        if self.link_function == 'exp':
-            self.observation_density = approximate_conditional.HeteroscedasticExpConditional(
+        try:
+            self.observation_density = self.observation_density_dict[self.link_function](
                 M=jnp.array([self.C]),
                 b=jnp.array([self.d]),
                 A=jnp.array([self.A]),
                 W=self.W,
             )
-        elif self.link_function == 'cosh_m1':
-            self.observation_density = approximate_conditional.HeteroscedasticCoshM1Conditional(
-                M=jnp.array([self.C]),
-                b=jnp.array([self.d]),
-                A=jnp.array([self.A]),
-                W=self.W,
-            )
-        else:
+        except KeyError:
             raise NotImplementedError(f'Link function {self.link_function} not implemented.')
         
     def update_hyperparameters(

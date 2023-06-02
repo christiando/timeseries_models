@@ -101,7 +101,7 @@ class LinearStateModel(StateModel):
         """
         self.Dz = Dz
         self.Qz = noise_z ** 2 * jnp.eye(self.Dz)
-        self.A, self.b = jnp.eye(self.Dz), jnp.zeros((self.Dz,))
+        self.A, self.b = .9 * jnp.eye(self.Dz), jnp.zeros((self.Dz,))
         self.state_density = conditional.ConditionalGaussianPDF(
             M=jnp.array([self.A]), b=jnp.array([self.b]), Sigma=jnp.array([self.Qz])
         )
