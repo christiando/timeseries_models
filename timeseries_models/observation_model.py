@@ -7,7 +7,7 @@ from jax import scipy as jsc
 import numpy as np
 from jax import lax
 from jax import jit, grad, vmap
-from gaussian_toolbox import pdf, conditional, approximate_conditional
+from gaussian_toolbox import pdf, conditional, approximate_conditional, heteroscedastic_conditional
 from gaussian_toolbox.utils.jax_minimize_wrapper import minimize
 from jax import random
 
@@ -871,7 +871,7 @@ class HCCovObservationModel(LinearObservationModel):
 
 class HeteroscedasticObservationModel(LinearObservationModel):
     
-    def __init__(self, Dx: int, Dz: int, Da: int, Dk: int, link_function: str = 'exp'):
+    def __init__(self, Dx: int, Dz: int, link_function: str = 'exp'):
         r"""This class implements a linear observation model, where the observations are generated as
 
             x_t = C z_t + d + xi_t     with      xi_t ~ N(0,Qx(z_t)),
@@ -886,79 +886,78 @@ class HeteroscedasticObservationModel(LinearObservationModel):
         :type Dx: int
         :param Dz: Dimensionality of latent space.
         :type Dz: int
-        :param Dk: Number of noise directions.
-        :type Dk: int
         :param noise_x: Intial isoptropic std. on the observations., defaults to 1.0
         :type noise_x: float, optional
         """
-        
-        assert Da >= Dx
-        assert Da >= Dk
-        self.Dx, self.Dz, self.Da, self.Dk = Dx, Dz, Da, Dk
+        self.Dx, self.Dz = Dx, Dz
         self.link_function = link_function
         if Dx == Dz:
             self.C = jnp.eye(Dx)
         else:
-            self.C = jnp.array(np.random.randn(Dx, Dz))
+            self.C = jnp.array(np.random.randn(Dx, self.Dz))
             self.C = self.C / jnp.sqrt(jnp.sum(self.C**2, axis=0))[None]
-
+            #self.C = jnp.zeros((Dx, Dz // 2))
         self.d = jnp.zeros(Dx)
-        if link_function == 'cosh_m1':
-            self.A = jnp.concatenate([jnp.ones((self.Dx, Da-self.Dx)), jnp.eye(Dx)], axis=1)
-        elif link_function == 'heaviside' or link_function == 'ReLU':
-            self.A = jnp.concatenate([jnp.array(1e-2 * np.random.randn(self.Dx, Da-self.Dx)),jnp.eye(Dx)], axis=1)
-        elif link_function == 'ReLU':
-            self.A = jnp.concatenate([jnp.ones((self.Dx, Da-self.Dx)),jnp.eye(Dx)], axis=1)
-        else:
-            self.A = jnp.concatenate([jnp.array(1e-2 * np.random.randn(self.Dx, Da-self.Dx)), jnp.eye(Dx)], axis=1)
+        triu_idx = jnp.triu_indices(Dx, k=0)
+        identity_flat = jnp.eye(Dx)[triu_idx]
+        if link_function == 'exp':
+            self.A_vec = identity_flat
+        elif link_function == 'sigmoid':
+            self.A_vec = identity_flat * jnp.sqrt(2.)
         
-        self.A = jnp.concatenate([jnp.array(1e-2*np.random.randn(Dx, Da-Dx)), jnp.eye(Dx)], axis=1)
-        if link_function == 'heaviside':
-            W = 10. * np.random.randn(self.Dk, self.Dz + 1)
-            W[:, 0] /= 10.
-        elif link_function == 'ReLU':
-            W = np.random.randn(self.Dk, self.Dz + 1)
-        else:
-            W = 1e-1 * np.random.randn(self.Dk, self.Dz + 1)
+        W = 1e-2 * np.random.randn(self.Dx, self.Dz + 1)
         self.W = jnp.array(W)
         self.update_observation_density()
         
-    @property
-    def observation_density_dict(self) -> dict:
-        return {'cosh_m1': approximate_conditional.HeteroscedasticCoshM1Conditional,
-                 'exp': approximate_conditional.HeteroscedasticExpConditional,
-                 'heaviside': approximate_conditional.HeteroscedasticHeavisideConditional,
-                 'ReLU': approximate_conditional.HeteroscedasticReLUConditional}
-        
     @classmethod
-    def from_linear_model(cls, lin_om: LinearObservationModel, Da: int, Dk: int, link_function: str = 'exp') -> 'HeteroscedasticObservationModel':
-        model = cls(lin_om.Dx, lin_om.Dz, Da, Dk, link_function)
-        L = jnp.linalg.cholesky(lin_om.Qx)
-        if link_function == 'cosh_m1':
-            model.A = jnp.concatenate([jnp.ones((model.Dx, Da-model.Dx)), L], axis=1)
-        elif link_function == 'heavyside' or link_function == 'ReLU':
-            model.A = jnp.concatenate([jnp.array(1e-2 * np.random.randn(model.Dx, Da-model.Dx)), jnp.sqrt(.5) *  L], axis=1)
-        else:
-            model.A = jnp.concatenate([jnp.array(1e-2 * np.random.randn(model.Dx, Da-model.Dx)), jnp.sqrt(.5) *  L], axis=1)
+    def from_linear_model(cls, lin_om: LinearObservationModel, link_function: str = 'exp') -> 'HeteroscedasticObservationModel':
+        model = cls(lin_om.Dx, lin_om.Dz, link_function)
+        triu_idx = jnp.triu_indices(model.Dx, k=0)
+        L_flat = jnp.linalg.cholesky(lin_om.Qx)[triu_idx]
+        if link_function == 'exp':
+            model.A_vec = L_flat
+        elif link_function == 'sigmoid':
+            model.A_vec = L_flat * jnp.sqrt(2.)
         model.C = lin_om.C
         model.d = lin_om.d
-        W = 1e-2 * np.random.randn(model.Dk, model.Dz + 1)
-        #W[:, 0] = 0
+        W = np.random.randn(model.Dk, model.Dz + 1)
         model.W = jnp.array(W)
         model.update_observation_density()
         return model
+    
+    def filtering(
+        self, prediction_density: pdf.GaussianPDF, x_t: jnp.ndarray, **kwargs
+    ) -> pdf.GaussianPDF:
+        """_"Calculate filter density.
+
+        p(z_t|x_{1:t}) = p(x_t|z_t)p(z_t|x_{1:t-1}) / p(x_t)
+
+        :param prediction_density: Prediction density p(z_t|x_{1:t-1}).
+        :type prediction_density: pdf.GaussianPDF
+        :param x_t: Observation vector. Dimensions should be [1, Dx].
+        :type x_t: jnp.ndarray
+        :return: Filter density p(z_t|x_{1:t}).
+        :rtype: pdf.GaussianPDF
+        """
+        # p(z_t| x_t, x_{1:t-1})
+        #p_z_given_x = self.observation_density.affine_conditional_transformation(
+        #    prediction_density
+        #)
+        cur_filter_density = self.observation_density.affine_variational_conditional_transformation(prediction_density, x_t)
+        return cur_filter_density
         
     def update_observation_density(self):
         """Updates the emission density."""
-        try:
-            self.observation_density = self.observation_density_dict[self.link_function](
-                M=jnp.array([self.C]),
-                b=jnp.array([self.d]),
-                A=jnp.array([self.A]),
-                W=self.W,
-            )
-        except KeyError:
-            raise NotImplementedError(f'Link function {self.link_function} not implemented.')
+        W = self.W
+        C = self.C
+
+        self.observation_density = heteroscedastic_conditional.HeteroscedasticConditional(
+            M=jnp.array([C]),
+            b=jnp.array([self.d]),
+            A_vec=self.A_vec,
+            W=W,
+            link_function=self.link_function
+        )
         
     def update_hyperparameters(
         self, X: jnp.ndarray, smooth_dict: dict, **kwargs
@@ -981,15 +980,17 @@ class HeteroscedasticObservationModel(LinearObservationModel):
             smoothing_density = pdf.GaussianPDF(**smooth_dict).slice(jnp.arange(1, T + 1))
             self.C = params['C']
             self.d = params['d']
-            self.A = params['A']
+            self.A_vec = params['A_vec']
+            #self.W = jnp.clip(params['W'], -10, 10)
             self.W = params['W']
             self.update_observation_density()
-            return -self.compute_Q_function(smoothing_density, X)
+            return -self.compute_Q_function(smoothing_density, X) / T
 
         batch_objective = lambda params, X, smooth_dict: jnp.mean(vmap(objective, in_axes=[None, 0, {'Sigma': 0, 'mu': 0, 'Lambda': 0, 'ln_det_Sigma': 0}])(params, X, smooth_dict))
+        print(self.A_vec)
         params = {'C': self.C,
                   'd': self.d,
-                  'A': self.A,
+                  'A_vec': self.A_vec,
                   'W': self.W}
         
         result  = minimize(batch_objective, params, 'L-BFGS-B', args=(X, smooth_dict))
@@ -997,17 +998,160 @@ class HeteroscedasticObservationModel(LinearObservationModel):
         if result.success:
             self.C = result.x['C']
             self.d = result.x['d']
-            self.A = result.x['A']
+            self.A_vec = result.x['A_vec']
             self.W = result.x['W']
         else:
             self.C = params['C']
             self.d = params['d']
-            self.A = params['A']
+            self.A_vec = params['A_vec']
             self.W = params['W']
+        print(params['C'], params['W'])
         self.update_observation_density()
         
+class HeteroscedasticObservationModel2(LinearObservationModel):
+    
+    def __init__(self, Dx: int, Dz: int, Dz_noise: int, link_function: str = 'exp'):
+        r"""This class implements a linear observation model, where the observations are generated as
+
+            x_t = C z_t + d + xi_t     with      xi_t ~ N(0,Qx(z_t)),
+
+        where
+
+            Qx(z) = sigma_x^2 I + \sum_i U_i D_i(z) U_i',
+
+        with D_i(z) = 2 * beta_i * cosh(h_i(z)) and h_i(z) = w_i'z + b_i.
+
+        :param Dx: Dimensionality of observations.
+        :type Dx: int
+        :param Dz: Dimensionality of latent space.
+        :type Dz: int
+        :param noise_x: Intial isoptropic std. on the observations., defaults to 1.0
+        :type noise_x: float, optional
+        """
+        assert Dz_noise < Dz
+        self.Dx, self.Dz, self.Dz_noise = Dx, Dz, Dz_noise
+        self.Dz_mean = Dz - Dz_noise
+        self.link_function = link_function
+        if Dx == Dz // 2:
+            self.C = jnp.eye(Dx)
+        else:
+            self.C = jnp.array(np.random.randn(Dx, self.Dz_mean))
+            self.C = self.C / jnp.sqrt(jnp.sum(self.C**2, axis=0))[None]
+            #self.C = jnp.zeros((Dx, Dz // 2))
+        self.d = jnp.zeros(Dx)
+        triu_idx = jnp.triu_indices(Dx, k=0)
+        identity_flat = jnp.eye(Dx)[triu_idx]
+        if link_function == 'exp':
+            self.A_vec = identity_flat
+        elif link_function == 'sigmoid':
+            self.A_vec = identity_flat * jnp.sqrt(2.)
         
+        W = 1e-2 * np.random.randn(self.Dx, self.Dz_noise + 1)
+        self.W = jnp.array(W)
+        self.update_observation_density()
         
+    @classmethod
+    def from_linear_model(cls, lin_om: LinearObservationModel, link_function: str = 'exp') -> 'HeteroscedasticObservationModel':
+        model = cls(lin_om.Dx, lin_om.Dz, link_function)
+        triu_idx = jnp.triu_indices(model.Dx, k=0)
+        L_flat = jnp.linalg.cholesky(lin_om.Qx)[triu_idx]
+        if link_function == 'exp':
+            model.A_vec = L_flat
+        elif link_function == 'sigmoid':
+            model.A_vec = L_flat * jnp.sqrt(2.)
+        model.C = lin_om.C
+        model.d = lin_om.d
+        W = np.random.randn(model.Dk, model.Dz + 1)
+        model.W = jnp.array(W)
+        model.update_observation_density()
+        return model
+    
+    def filtering(
+        self, prediction_density: pdf.GaussianPDF, x_t: jnp.ndarray, **kwargs
+    ) -> pdf.GaussianPDF:
+        """_"Calculate filter density.
+
+        p(z_t|x_{1:t}) = p(x_t|z_t)p(z_t|x_{1:t-1}) / p(x_t)
+
+        :param prediction_density: Prediction density p(z_t|x_{1:t-1}).
+        :type prediction_density: pdf.GaussianPDF
+        :param x_t: Observation vector. Dimensions should be [1, Dx].
+        :type x_t: jnp.ndarray
+        :return: Filter density p(z_t|x_{1:t}).
+        :rtype: pdf.GaussianPDF
+        """
+        # p(z_t| x_t, x_{1:t-1})
+        #p_z_given_x = self.observation_density.affine_conditional_transformation(
+        #    prediction_density
+        #)
+        cur_filter_density = self.observation_density.affine_variational_conditional_transformation(prediction_density, x_t)
+        return cur_filter_density
+        
+    def update_observation_density(self):
+        """Updates the emission density."""
+        W = jnp.zeros((self.Dx, self.Dz + 1))
+        W = W.at[:, :self.Dz_noise + 1].set(self.W)
+        C = jnp.zeros((self.Dx, self.Dz))
+        C = C.at[:, self.Dz_noise:].set(self.C)
+
+        self.observation_density = heteroscedastic_conditional.HeteroscedasticConditional(
+            M=jnp.array([C]),
+            b=jnp.array([self.d]),
+            A_vec=self.A_vec,
+            W=W,
+            link_function=self.link_function
+        )
+        
+    def update_hyperparameters(
+        self, X: jnp.ndarray, smooth_dict: dict, **kwargs
+    ):
+        """Update hyperparameters.
+
+        :param smoothing_density: The smoothing density over the latent space.
+        :type smoothing_density: pdf.GaussianPDF
+        :param X: Observations. Dimensions should be [T, Dx]
+        :type X: jnp.ndarray
+        :raises NotImplementedError: Must be implemented.
+        """
+        
+        self._update_euclid_params(X, smooth_dict)
+
+            
+    def _update_euclid_params(self, X, smooth_dict):
+        def objective(params, X, smooth_dict):
+            T = X.shape[0]
+            smoothing_density = pdf.GaussianPDF(**smooth_dict).slice(jnp.arange(1, T + 1))
+            self.C = params['C']
+            self.d = params['d']
+            #self.A_vec = params['A_vec']
+            #self.W = jnp.clip(params['W'], -10, 10)
+            self.W = params['W']
+            self.update_observation_density()
+            return -self.compute_Q_function(smoothing_density, X) / T
+
+        batch_objective = lambda params, X, smooth_dict: jnp.mean(vmap(objective, in_axes=[None, 0, {'Sigma': 0, 'mu': 0, 'Lambda': 0, 'ln_det_Sigma': 0}])(params, X, smooth_dict))
+        print(self.A_vec)
+        params = {'C': self.C,
+                  'd': self.d,
+                  'A_vec': self.A_vec,
+                  'W': self.W}
+        
+        result  = minimize(batch_objective, params, 'L-BFGS-B', args=(X, smooth_dict))
+        print(f"ACd:{result.success}")
+        if result.success:
+            self.C = result.x['C']
+            self.d = result.x['d']
+            self.A_vec = result.x['A_vec']
+            self.W = result.x['W']
+        else:
+            self.C = params['C']
+            self.d = params['d']
+            self.A_vec = params['A_vec']
+            self.W = params['W']
+        print(params['C'], params['W'])
+        self.update_observation_density()
+        
+
 '''        
 class HCCovObservationModel(LinearObservationModel):
     def __init__(self, Dx: int, Dz: int, Du: int, noise_x: float = 1.0):
@@ -1227,7 +1371,7 @@ class HCCovObservationModel(LinearObservationModel):
         Q, R = np.linalg.qr(rand_mat)
         #self.U = jnp.array(Q[:, : self.Du])
         self.U = jnp.eye(self.Dx)[:,:self.Du]
-        W = 1e-2 * np.random.randn(self.Du, self.Dz + 1)
+        W = np.random.randn(self.Du, self.Dz + 1)
         W[:, 0] = 0
         self.W = jnp.array(W)
         self.log_beta = jnp.log(2 * noise_x**2 * jnp.ones(self.Du))
