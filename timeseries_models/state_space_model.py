@@ -8,6 +8,7 @@ import os
 import numpy as onp
 import time
 from typing import Union, Tuple, List
+
 ##################################################################################################
 # This file is part of the Gaussian Toolbox,                                                     #
 #                                                                                                #
@@ -26,7 +27,6 @@ import pickle
 import os
 import time
 from typing import Union, Tuple
-
 
 
 class StateSpaceModel:
@@ -60,19 +60,27 @@ class StateSpaceModel:
         self.om = observation_model
         # state model
         self.sm = state_model
-    
-    def _init(self, X: jnp.ndarray, mu0: jnp.ndarray=None, Sigma0: jnp.ndarray=None, control_x: jnp.ndarray=None, control_z: jnp.ndarray=None, horizon: int=0) -> Tuple[jnp.ndarray]:
+
+    def _init(
+        self,
+        X: jnp.ndarray,
+        mu0: jnp.ndarray = None,
+        Sigma0: jnp.ndarray = None,
+        control_x: jnp.ndarray = None,
+        control_z: jnp.ndarray = None,
+        horizon: int = 0,
+    ) -> Tuple[jnp.ndarray]:
         assert X.shape[-1] == self.om.Dx
-        assert control_x == None or control_x.ndim == X.ndim 
+        assert control_x == None or control_x.ndim == X.ndim
         assert control_z == None or control_z.ndim == X.ndim
         if X.ndim == 2:
             X = X[None]
         if control_x == None:
-            control_x = jnp.empty((X.shape[0], X.shape[1]+ horizon, 0))
+            control_x = jnp.empty((X.shape[0], X.shape[1] + horizon, 0))
         elif control_x.ndim == 2:
             control_x = control_x[None]
         if control_z == None:
-            control_z = jnp.empty((X.shape[0], X.shape[1]+ horizon, 0))
+            control_z = jnp.empty((X.shape[0], X.shape[1] + horizon, 0))
         elif control_z.ndim == 2:
             control_z = control_x[None]
         assert control_x.shape[1] == (X.shape[1] + horizon)
@@ -80,38 +88,52 @@ class StateSpaceModel:
         if mu0 == None:
             mu0 = jnp.zeros((X.shape[0], 1, self.sm.Dz))
         if Sigma0 == None:
-            Sigma0 = jnp.tile(jnp.eye(self.sm.Dz)[None,None], (X.shape[0], 1, 1, 1))
+            Sigma0 = jnp.tile(jnp.eye(self.sm.Dz)[None, None], (X.shape[0], 1, 1, 1))
         return X, mu0, Sigma0, control_x, control_z
 
     @staticmethod
     def _check_convergence(Q_new, Q_old, conv_crit: float) -> bool:
         conv = (Q_new - Q_old) / jnp.amax(
-                    jnp.array(
-                        [1, jnp.abs(Q_old), jnp.abs(Q_new)]
-                    )
-                )
+            jnp.array([1, jnp.abs(Q_old), jnp.abs(Q_new)])
+        )
         return jnp.abs(conv) < conv_crit
-    
-    def fit(self, X: jnp.ndarray, control_x: jnp.ndarray=None, control_z: jnp.ndarray=None, max_iter: int=100, conv_crit: float=1e-3, timeit: bool=False):
+
+    def fit(
+        self,
+        X: jnp.ndarray,
+        control_x: jnp.ndarray = None,
+        control_z: jnp.ndarray = None,
+        max_iter: int = 100,
+        conv_crit: float = 1e-3,
+        timeit: bool = False,
+    ):
         """Fits the expectation-maximization algorithm.
 
         Runs until convergence or maximal number of iterations is reached.
         """
-        X, mu0, Sigma0, control_x, control_z = self._init(X, control_x=control_x, control_z=control_z)
+        X, mu0, Sigma0, control_x, control_z = self._init(
+            X, control_x=control_x, control_z=control_z
+        )
         converged = False
         iteration = 0
         Q_list = []
         Q_func_old = -jnp.inf
         while iteration < max_iter and not converged:
             time_start_total = time.perf_counter()
-            smooth_dict, two_step_smooth_dict = self.estep(X, mu0, Sigma0, control_x, control_z)
+            smooth_dict, two_step_smooth_dict = self.estep(
+                X, mu0, Sigma0, control_x, control_z
+            )
             etime = time.perf_counter() - time_start_total
             time_start = time.perf_counter()
-            Q_func = self.compute_Q_function(X, smooth_dict, two_step_smooth_dict, mu0, Sigma0, control_x, control_z)
-            #Q_func = self.compute_predictive_log_likelihood(X[:,:-1], mu0, Sigma0, control_x, control_z)
+            Q_func = self.compute_Q_function(
+                X, smooth_dict, two_step_smooth_dict, mu0, Sigma0, control_x, control_z
+            )
+            # Q_func = self.compute_predictive_log_likelihood(X[:,:-1], mu0, Sigma0, control_x, control_z)
             Q_time = time.perf_counter() - time_start
             time_start = time.perf_counter()
-            mu0, Sigma0 = self.mstep(X, smooth_dict, two_step_smooth_dict, control_x, control_z)
+            mu0, Sigma0 = self.mstep(
+                X, smooth_dict, two_step_smooth_dict, control_x, control_z
+            )
             mtime = time.perf_counter() - time_start
             Q_list.append(Q_func)
             if iteration > 2:
@@ -119,10 +141,7 @@ class StateSpaceModel:
             iteration += 1
             Q_func_old = Q_func
             if iteration % 1 == 0:
-                print(
-                    "Iteration %d - Q-function=%.1f"
-                    % (iteration, Q_func_old)
-                )
+                print("Iteration %d - Q-function=%.1f" % (iteration, Q_func_old))
             tot_time = time.perf_counter() - time_start_total
             if timeit:
                 print(
@@ -137,69 +156,160 @@ class StateSpaceModel:
             print("EM reached the maximal number of iterations.")
         else:
             print("EM did converge.")
-        p0_dict = {'Sigma': Sigma0, 'mu': mu0}
+        p0_dict = {"Sigma": Sigma0, "mu": mu0}
         return Q_list, p0_dict, smooth_dict, two_step_smooth_dict
-            
-    def predict(self, X: jnp.ndarray, mu0: jnp.ndarray=None, Sigma0: jnp.ndarray=None, control_x: jnp.ndarray=None, control_z: jnp.ndarray=None, horizon: int=1, observed_dims: jnp.ndarray=None, first_prediction_idx:int=0):
-        X, mu0, Sigma0, control_x, control_z = self._init(X, mu0=mu0, Sigma0=Sigma0, control_x=control_x, control_z=control_z, horizon=horizon)
-        predict_func = jit(vmap(lambda X, mu0, Sigma0, control_x, control_z: self._predict(X, mu0, Sigma0, control_x, control_z, horizon, observed_dims, first_prediction_idx)))
+
+    def predict(
+        self,
+        X: jnp.ndarray,
+        mu0: jnp.ndarray = None,
+        Sigma0: jnp.ndarray = None,
+        control_x: jnp.ndarray = None,
+        control_z: jnp.ndarray = None,
+        horizon: int = 1,
+        observed_dims: jnp.ndarray = None,
+        first_prediction_idx: int = 0,
+    ):
+        X, mu0, Sigma0, control_x, control_z = self._init(
+            X,
+            mu0=mu0,
+            Sigma0=Sigma0,
+            control_x=control_x,
+            control_z=control_z,
+            horizon=horizon,
+        )
+        predict_func = jit(
+            vmap(
+                lambda X, mu0, Sigma0, control_x, control_z: self._predict(
+                    X,
+                    mu0,
+                    Sigma0,
+                    control_x,
+                    control_z,
+                    horizon,
+                    observed_dims,
+                    first_prediction_idx,
+                )
+            )
+        )
         data_predict_dict = predict_func(X, mu0, Sigma0, control_x, control_z)
         data_prediction_densities = []
         num_batches = X.shape[0]
         for ibatch in range(num_batches):
-            batch_density = pdf.GaussianPDF(Sigma=data_predict_dict['Sigma'][ibatch],
-                                            mu=data_predict_dict['mu'][ibatch],
-                                            Lambda=data_predict_dict['Lambda'][ibatch],
-                                            ln_det_Sigma=data_predict_dict['ln_det_Sigma'][ibatch])
+            batch_density = pdf.GaussianPDF(
+                Sigma=data_predict_dict["Sigma"][ibatch],
+                mu=data_predict_dict["mu"][ibatch],
+                Lambda=data_predict_dict["Lambda"][ibatch],
+                ln_det_Sigma=data_predict_dict["ln_det_Sigma"][ibatch],
+            )
             data_prediction_densities.append(batch_density)
         if num_batches == 1:
             return data_prediction_densities[0]
         else:
             return data_prediction_densities
-            
-    def _predict(self, X: jnp.ndarray, mu0: jnp.ndarray, Sigma0: jnp.ndarray, control_x: jnp.ndarray, control_z: jnp.ndarray, horizon: int, observed_dims: jnp.ndarray, first_prediction_idx: int):
+
+    def _predict(
+        self,
+        X: jnp.ndarray,
+        mu0: jnp.ndarray,
+        Sigma0: jnp.ndarray,
+        control_x: jnp.ndarray,
+        control_z: jnp.ndarray,
+        horizon: int,
+        observed_dims: jnp.ndarray,
+        first_prediction_idx: int,
+    ):
         T = X.shape[0]
         if first_prediction_idx == 0:
             p0 = pdf.GaussianPDF(Sigma=Sigma0, mu=mu0)
             init = p0
-            prediction_step = lambda cp, vars_t: self._prediction_step(cp, vars_t, control_x, control_z, observed_dims, horizon)
+            prediction_step = lambda cp, vars_t: self._prediction_step(
+                cp, vars_t, control_x, control_z, observed_dims, horizon
+            )
             _, result = lax.scan(prediction_step, init, (X, jnp.arange(0, T)))
         else:
-            filter_dict = self._forward_sweep(X[:first_prediction_idx], mu0, Sigma0, control_x[:first_prediction_idx], control_z[:first_prediction_idx])
-            p0_pred = pdf.GaussianPDF(Sigma=filter_dict['Sigma'][-1:], mu=filter_dict['mu'][-1:], Lambda=filter_dict['Lambda'][-1:], ln_det_Sigma=filter_dict['ln_det_Sigma'][-1:])
+            filter_dict = self._forward_sweep(
+                X[:first_prediction_idx],
+                mu0,
+                Sigma0,
+                control_x[:first_prediction_idx],
+                control_z[:first_prediction_idx],
+            )
+            p0_pred = pdf.GaussianPDF(
+                Sigma=filter_dict["Sigma"][-1:],
+                mu=filter_dict["mu"][-1:],
+                Lambda=filter_dict["Lambda"][-1:],
+                ln_det_Sigma=filter_dict["ln_det_Sigma"][-1:],
+            )
             init = p0_pred
-            prediction_step = lambda cp, vars_t: self._prediction_step(cp, vars_t, control_x[first_prediction_idx:], control_z[first_prediction_idx:], observed_dims, horizon)
-            _, result = lax.scan(prediction_step, init, (X[first_prediction_idx:], jnp.arange(0, T-first_prediction_idx)))
-        data_prediction_dict = {'Sigma': result[0], 'mu': result[1], 'Lambda': result[2], 'ln_det_Sigma': result[3]}
+            prediction_step = lambda cp, vars_t: self._prediction_step(
+                cp,
+                vars_t,
+                control_x[first_prediction_idx:],
+                control_z[first_prediction_idx:],
+                observed_dims,
+                horizon,
+            )
+            _, result = lax.scan(
+                prediction_step,
+                init,
+                (X[first_prediction_idx:], jnp.arange(0, T - first_prediction_idx)),
+            )
+        data_prediction_dict = {
+            "Sigma": result[0],
+            "mu": result[1],
+            "Lambda": result[2],
+            "ln_det_Sigma": result[3],
+        }
         return data_prediction_dict
-            
-    def _prediction_step(self, carry, vars_t, control_x, control_z, observed_dims, horizon):
-        X_t, t  = vars_t
-        roll_out_step = lambda cp, vars_t: self._roll_out_horizon(cp, vars_t, control_z, t)
-        _, result = lax.scan(
-            roll_out_step, carry, jnp.arange(horizon)
+
+    def _prediction_step(
+        self, carry, vars_t, control_x, control_z, observed_dims, horizon
+    ):
+        X_t, t = vars_t
+        roll_out_step = lambda cp, vars_t: self._roll_out_horizon(
+            cp, vars_t, control_z, t
         )
-        (Sigma_prediction,
-         mu_prediction,
-         Lambda_prediction,
-         ln_det_Sigma_prediction) = result
-        cur_prediction_density = pdf.GaussianPDF(Sigma=Sigma_prediction[:1], mu=mu_prediction[:1], Lambda=Lambda_prediction[:1], ln_det_Sigma=ln_det_Sigma_prediction[:1])
-        cur_filter_density = self.om.partially_observed_filtering(cur_prediction_density, X_t[None], observed_dims, u=control_x[t])
+        _, result = lax.scan(roll_out_step, carry, jnp.arange(horizon))
+        (
+            Sigma_prediction,
+            mu_prediction,
+            Lambda_prediction,
+            ln_det_Sigma_prediction,
+        ) = result
+        cur_prediction_density = pdf.GaussianPDF(
+            Sigma=Sigma_prediction[:1],
+            mu=mu_prediction[:1],
+            Lambda=Lambda_prediction[:1],
+            ln_det_Sigma=ln_det_Sigma_prediction[:1],
+        )
+        cur_filter_density = self.om.partially_observed_filtering(
+            cur_prediction_density, X_t[None], observed_dims, u=control_x[t]
+        )
         carry = cur_filter_density
-        horizon_prediction_density = pdf.GaussianPDF(Sigma=Sigma_prediction[-1:], mu=mu_prediction[-1:], Lambda=Lambda_prediction[-1:], ln_det_Sigma=ln_det_Sigma_prediction[-1:])
-        horizon_data_density = self.om.get_data_density(horizon_prediction_density, u=control_x[t+horizon])
+        horizon_prediction_density = pdf.GaussianPDF(
+            Sigma=Sigma_prediction[-1:],
+            mu=mu_prediction[-1:],
+            Lambda=Lambda_prediction[-1:],
+            ln_det_Sigma=ln_det_Sigma_prediction[-1:],
+        )
+        horizon_data_density = self.om.get_data_density(
+            horizon_prediction_density, u=control_x[t + horizon]
+        )
         result = (
             horizon_data_density.Sigma[0],
             horizon_data_density.mu[0],
             horizon_data_density.Lambda[0],
             horizon_data_density.ln_det_Sigma[0],
         )
-        return carry, result      
-        
+        return carry, result
+
     def _roll_out_horizon(self, carry, vars_t, control_z, t):
         t_horizon = vars_t
         pre_prediction_density = carry
-        cur_prediction_density = self.sm.prediction(pre_prediction_density, u=control_z[t+t_horizon][None])
+        cur_prediction_density = self.sm.prediction(
+            pre_prediction_density, u=control_z[t + t_horizon][None]
+        )
         carry = cur_prediction_density
         result = (
             cur_prediction_density.Sigma[0],
@@ -208,8 +318,10 @@ class StateSpaceModel:
             cur_prediction_density.ln_det_Sigma[0],
         )
         return carry, result
-    
-    def mstep(self, X, smooth_dict, two_step_smooth_dict, control_x, control_z) -> Tuple[jnp.ndarray]:
+
+    def mstep(
+        self, X, smooth_dict, two_step_smooth_dict, control_x, control_z
+    ) -> Tuple[jnp.ndarray]:
         """Perform the maximization step, i.e. the updates of model parameters."""
         # Update parameters of state model
         self.sm.update_hyperparameters(
@@ -219,18 +331,34 @@ class StateSpaceModel:
         )
         # Update parameters of observation model
         self.om.update_hyperparameters(X, smooth_dict, control_x=control_x)
-        mu0, Sigma0 = smooth_dict['mu'][:,:1], smooth_dict['Sigma'][:,:1]
+        mu0, Sigma0 = smooth_dict["mu"][:, :1], smooth_dict["Sigma"][:, :1]
         return mu0, Sigma0
 
-    def estep(self, X: jnp.ndarray, mu0: jnp.ndarray, Sigma0: jnp.ndarray, control_x: jnp.ndarray, control_z: jnp.ndarray) -> Tuple[dict]:
+    def estep(
+        self,
+        X: jnp.ndarray,
+        mu0: jnp.ndarray,
+        Sigma0: jnp.ndarray,
+        control_x: jnp.ndarray,
+        control_z: jnp.ndarray,
+    ) -> Tuple[dict]:
         return jit(vmap(self._estep))(X, mu0, Sigma0, control_x, control_z)
-    
-    def _estep(self, X: jnp.ndarray, mu0: jnp.ndarray, Sigma0: jnp.ndarray, control_x: jnp.ndarray, control_z: jnp.ndarray) -> Tuple[dict]:
+
+    def _estep(
+        self,
+        X: jnp.ndarray,
+        mu0: jnp.ndarray,
+        Sigma0: jnp.ndarray,
+        control_x: jnp.ndarray,
+        control_z: jnp.ndarray,
+    ) -> Tuple[dict]:
         """Perform the expectation step, i.e. the forward-backward algorithm."""
         filter_dict = self._forward_sweep(X, mu0, Sigma0, control_x, control_z)
-        smooth_dict, two_step_smooth_dict = self._backward_sweep(X, filter_dict, control_z)
-        return smooth_dict, two_step_smooth_dict   
-        
+        smooth_dict, two_step_smooth_dict = self._backward_sweep(
+            X, filter_dict, control_z
+        )
+        return smooth_dict, two_step_smooth_dict
+
     def _forward_step(self, carry: Tuple, vars_t: Tuple) -> Tuple:
         """Compute one step forward in time (prediction & filter).
 
@@ -256,7 +384,14 @@ class StateSpaceModel:
         )
         return carry, result
 
-    def _forward_sweep(self, X: jnp.ndarray, mu0: jnp.ndarray, Sigma0: jnp.ndarray, control_x: jnp.ndarray, control_z: jnp.ndarray) -> dict:
+    def _forward_sweep(
+        self,
+        X: jnp.ndarray,
+        mu0: jnp.ndarray,
+        Sigma0: jnp.ndarray,
+        control_x: jnp.ndarray,
+        control_z: jnp.ndarray,
+    ) -> dict:
         """Iterate forward, alternately doing prediction and filtering step."""
         pz0 = pdf.GaussianPDF(Sigma=Sigma0, mu=mu0)
         init = pz0
@@ -270,13 +405,17 @@ class StateSpaceModel:
             Lambda_filter,
             ln_det_Sigma_filter,
         ) = result
-        filter_dict = {'Sigma': jnp.concatenate([pz0.Sigma, Sigma_filter]),
-                            'mu': jnp.concatenate([pz0.mu, mu_filter]),
-                            'Lambda': jnp.concatenate([pz0.Lambda, Lambda_filter]),
-                            'ln_det_Sigma': jnp.concatenate([pz0.ln_det_Sigma, ln_det_Sigma_filter])}
+        filter_dict = {
+            "Sigma": jnp.concatenate([pz0.Sigma, Sigma_filter]),
+            "mu": jnp.concatenate([pz0.mu, mu_filter]),
+            "Lambda": jnp.concatenate([pz0.Lambda, Lambda_filter]),
+            "ln_det_Sigma": jnp.concatenate([pz0.ln_det_Sigma, ln_det_Sigma_filter]),
+        }
         return filter_dict
-        
-    def _backward_step(self, carry: Tuple, vars_t: Tuple[int, jnp.array], filter_density) -> Tuple:
+
+    def _backward_step(
+        self, carry: Tuple, vars_t: Tuple[int, jnp.array], filter_density
+    ) -> Tuple:
         """Compute one step backward in time (smoothing).
 
         :param carry: Observations and control variables
@@ -305,12 +444,16 @@ class StateSpaceModel:
         )
         return carry, result
 
-    def _backward_sweep(self, X: jnp.ndarray, filter_dict: dict, control_z: jnp.ndarray) -> Tuple[dict]:
+    def _backward_sweep(
+        self, X: jnp.ndarray, filter_dict: dict, control_z: jnp.ndarray
+    ) -> Tuple[dict]:
         """Iterate backward doing smoothing step."""
         filter_density = pdf.GaussianPDF(**filter_dict)
         last_filter_density = filter_density.slice(jnp.array([X.shape[0]]))
         cs_init = last_filter_density
-        backward_step = lambda cs, vars_t: self._backward_step(cs, vars_t, filter_density)
+        backward_step = lambda cs, vars_t: self._backward_step(
+            cs, vars_t, filter_density
+        )
         t_range = jnp.arange(X.shape[0] - 1, -1, -1)
         _, result = lax.scan(backward_step, cs_init, (t_range, control_z[:, None]))
         (
@@ -327,7 +470,9 @@ class StateSpaceModel:
             Sigma=jnp.concatenate([Sigma_smooth[::-1], last_filter_density.Sigma]),
             mu=jnp.concatenate([mu_smooth[::-1], last_filter_density.mu]),
             Lambda=jnp.concatenate([Lambda_smooth[::-1], last_filter_density.Lambda]),
-            ln_det_Sigma=jnp.concatenate([ln_det_Sigma_smooth[::-1], last_filter_density.ln_det_Sigma]),
+            ln_det_Sigma=jnp.concatenate(
+                [ln_det_Sigma_smooth[::-1], last_filter_density.ln_det_Sigma]
+            ),
         )
         new_two_step_smooth_density = pdf.GaussianPDF(
             Sigma=Sigma_two_step_smooth[::-1],
@@ -336,13 +481,35 @@ class StateSpaceModel:
             ln_det_Sigma=ln_det_Sigma_two_step_smooth[::-1],
         )
         return new_smooth_density.to_dict(), new_two_step_smooth_density.to_dict()
-    
-    def compute_Q_function(self, X: jnp.ndarray, smooth_dict: dict, two_step_smooth_dict: dict, mu0: jnp.ndarray=None, Sigma0: jnp.ndarray=None, control_x: jnp.ndarray=None, control_z: jnp.ndarray=None) -> float:
-        X, mu0, Sigma0, control_x, control_z = self._init(X, mu0, Sigma0, control_x, control_z) 
-        Q_batch = jit(vmap(self._compute_Q_function_batch))(X, smooth_dict, two_step_smooth_dict, mu0, Sigma0, control_x, control_z)
+
+    def compute_Q_function(
+        self,
+        X: jnp.ndarray,
+        smooth_dict: dict,
+        two_step_smooth_dict: dict,
+        mu0: jnp.ndarray = None,
+        Sigma0: jnp.ndarray = None,
+        control_x: jnp.ndarray = None,
+        control_z: jnp.ndarray = None,
+    ) -> float:
+        X, mu0, Sigma0, control_x, control_z = self._init(
+            X, mu0, Sigma0, control_x, control_z
+        )
+        Q_batch = jit(vmap(self._compute_Q_function_batch))(
+            X, smooth_dict, two_step_smooth_dict, mu0, Sigma0, control_x, control_z
+        )
         return jnp.sum(Q_batch)
-    
-    def _compute_Q_function_batch(self, X: jnp.ndarray, smooth_dict: dict, two_step_smooth_dict: dict, mu0: jnp.ndarray, Sigma0: jnp.ndarray, control_x: jnp.ndarray, control_z: jnp.ndarray) -> float:
+
+    def _compute_Q_function_batch(
+        self,
+        X: jnp.ndarray,
+        smooth_dict: dict,
+        two_step_smooth_dict: dict,
+        mu0: jnp.ndarray,
+        Sigma0: jnp.ndarray,
+        control_x: jnp.ndarray,
+        control_z: jnp.ndarray,
+    ) -> float:
         r"""Compute Q-function.
 
         .. math::
@@ -376,7 +543,7 @@ class StateSpaceModel:
         control_x: jnp.ndarray = None,
         control_z: jnp.ndarray = None,
         ignore_init_samples: int = 0,
-        first_prediction_idx: int = 0
+        first_prediction_idx: int = 0,
     ) -> float:
         """Compute the likelihood for given data :math:`X`.
 
@@ -393,17 +560,35 @@ class StateSpaceModel:
         :return: Data log likelihood.
         :rtype: float
         """
-        X, mu0, Sigma0, control_x, control_z = self._init(X, mu0, Sigma0, control_x, control_z, horizon=1) 
-        predictive_densities = self.predict(X, mu0, Sigma0, control_x, control_z, observed_dims=jnp.arange(X.shape[-1]), first_prediction_idx=first_prediction_idx)
+        X, mu0, Sigma0, control_x, control_z = self._init(
+            X, mu0, Sigma0, control_x, control_z, horizon=1
+        )
+        predictive_densities = self.predict(
+            X,
+            mu0,
+            Sigma0,
+            control_x,
+            control_z,
+            observed_dims=jnp.arange(X.shape[-1]),
+            first_prediction_idx=first_prediction_idx,
+        )
         llk = 0
         num_batches = X.shape[0]
         if num_batches == 1:
-            llk += jnp.sum(predictive_densities.evaluate_ln(X[0,first_prediction_idx:], element_wise=True)[ignore_init_samples:])
+            llk += jnp.sum(
+                predictive_densities.evaluate_ln(
+                    X[0, first_prediction_idx:], element_wise=True
+                )[ignore_init_samples:]
+            )
         else:
             for density in predictive_densities:
-                llk += jnp.sum(density.evaluate_ln(X[0,first_prediction_idx:], element_wise=True)[ignore_init_samples:])
+                llk += jnp.sum(
+                    density.evaluate_ln(X[0, first_prediction_idx:], element_wise=True)[
+                        ignore_init_samples:
+                    ]
+                )
         return llk
-        
+
     def _sample_step(
         self,
         z_old: jnp.array,
@@ -512,5 +697,38 @@ class StateSpaceModel:
                 "File already exists. Pick another name or indicate overwrite."
             )
         else:
-            pickle.dump(self, open("%s/%s.p" % (path, model_name), "wb"))
+            sm_params = self.sm.get_params()
+            om_params = self.om.get_params()
+            model_dict = {"sm_params": sm_params, "om_params": om_params} | {
+                "sm_class": self.sm.__class__.__name__,
+                "om_class": self.om.__class__.__name__,
+            }
+            pickle.dump(model_dict, open(f"{path}/{model_name}.p", "wb"))
 
+    @classmethod
+    def load(cls, model_name: str, path: str = ""):
+        """Load the model.
+
+        :param model_name: Name of the model, which is used as file name.
+        :type model_name: str
+        :param path:  Path to which model is saved to, defaults to ""
+        :type path: str, optional
+        """
+        model_dict = pickle.load(open("%s/%s.p" % (path, model_name), "rb"))
+        state_model_dict = {
+            "LinearStateModel": state_model.LinearStateModel,
+            "LSEMStateModel": state_model.LSEMStateModel,
+            "LRBFStateModel": state_model.LRBFMStateModel,
+            "NNControlStateModel": state_model.NNControlStateModel,
+        }
+        observation_model_dict = {
+            "LinearObservationModel": observation_model.LinearObservationModel,
+            "LSEMObservationModel": observation_model.LSEMObservationModel,
+            "LRBFObservationModel": observation_model.LRBFMObservationModel,
+            "HeteroscedasticObservationModel": observation_model.HeteroscedasticObservationModel,
+        }
+        sm = state_model_dict[model_dict["sm_class"]].from_dict(model_dict["sm_params"])
+        om = observation_model_dict[model_dict["om_class"]].from_dict(
+            model_dict["om_params"]
+        )
+        return cls(observation_model=om, state_model=sm)
