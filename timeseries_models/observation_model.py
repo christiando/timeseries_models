@@ -341,6 +341,7 @@ class LSEMObservationModel(LinearObservationModel):
         Dz: int,
         Dk: int,
         noise_x: float = 1.0,
+        lambda_W: float = 0.0,
     ):
         """
         This implements a linear+squared exponential mean (LSEM) observation model
@@ -368,6 +369,7 @@ class LSEMObservationModel(LinearObservationModel):
         self.Dx, self.Dz, self.Dk = Dx, Dz, Dk
         self.Dphi = self.Dk + self.Dz
         self.Qx = noise_x**2 * jnp.eye(self.Dx)
+        self.lambda_W = lambda_W
         self.C = jnp.array(np.random.randn(self.Dx, self.Dphi))
         if self.Dx == self.Dz:
             self.C = self.C.at[:, : self.Dz].set(jnp.eye(self.Dx))
@@ -500,7 +502,9 @@ class LSEMObservationModel(LinearObservationModel):
             self.observation_density.w0 = W[:, 0]
             self.observation_density.W = W[:, 1:]
             self.observation_density.update_phi()
-            return -self.compute_Q_function(smoothing_density, X)
+            return -self.compute_Q_function(
+                smoothing_density, X
+            ) + 0.5 * self.lambda_W * jnp.sum(W**2)
 
         batch_objective = lambda params, X, smooth_dict: jnp.mean(
             vmap(

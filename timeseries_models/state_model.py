@@ -575,10 +575,11 @@ class LSEMStateModel(LinearStateModel):
     :type noise_z: float, optional
     """
 
-    def __init__(self, Dz: int, Dk: int, noise_z: float = 1.0):
+    def __init__(self, Dz: int, Dk: int, noise_z: float = 1.0, lambda_W: float = 0.0):
         self.Dz, self.Dk = Dz, Dk
         self.Dphi = self.Dk + self.Dz
         self.Qz = noise_z**2 * jnp.eye(self.Dz)
+        self.lambda_W = lambda_W
         self.A = jnp.array(np.random.randn(self.Dz, self.Dphi))
         self.A = self.A.at[:, : self.Dz].set(jnp.eye(self.Dz))
         self.b = jnp.zeros((self.Dz,))
@@ -753,7 +754,7 @@ class LSEMStateModel(LinearStateModel):
             self.state_density.update_phi()
             return -self.compute_Q_function(
                 smoothing_density, two_step_smoothing_density
-            )
+            ) + 0.5 * self.lambda_W * jnp.sum(W**2)
 
         batch_objective = lambda params, smooth_dict, two_step_smooth_dict: jnp.mean(
             vmap(
