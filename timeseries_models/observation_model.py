@@ -677,8 +677,8 @@ class LRBFMObservationModel(LSEMObservationModel):
     @classmethod
     def from_dict(cls, params: dict):
         Dx = params["C"].shape[0]
-        Dz = params["C"].shape[1] - Dx
         Dk = params["mu"].shape[0]
+        Dz = params["C"].shape[1] - Dk
         model = cls(Dx, Dz, Dk)
         model.C = params["C"]
         model.d = params["d"]
