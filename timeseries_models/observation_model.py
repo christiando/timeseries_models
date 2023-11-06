@@ -22,7 +22,7 @@ class ObservationModel:
         """This is the template class for observation models in state space models.
         Basically these classes should contain all functionality for the mapping between
         the latent variables z, and observations x, i.e. p(x_t|z_t). The object should
-        have an attribute `observation_density`, which is be a `ConditionalDensity`.
+        have an attribute `observation_density`, which is be a `C, control_x, control_zonditionalDensity`.
         Furthermore, it should be possible to optimize hyperparameters, when provided
         with a density over the latent space.
         """
@@ -112,6 +112,7 @@ class LinearObservationModel(ObservationModel):
             self.C = jnp.array(np.random.randn(Dx, Dz))
         self.d = jnp.zeros(Dx)
         self.Qx = noise_x**2 * jnp.eye(self.Dx)
+        self.Lx = jnp.linalg.cholesky(self.Qx)
         self.observation_density = conditional.ConditionalGaussianPDF(
             M=jnp.array([self.C]), b=jnp.array([self.d]), Sigma=jnp.array([self.Qx])
         )
@@ -209,6 +210,7 @@ class LinearObservationModel(ObservationModel):
         self.C = jit(self._update_C)(X, smooth_dict)
         self.d = jit(self._update_d)(X, smooth_dict)
         self.Qx = jit(self._update_Qx)(X, smooth_dict)
+        self.Lx = jnp.linalg.cholesky(self.Qx)
         self.update_observation_density()
 
     def _update_C(self, X, smooth_dict: pdf.GaussianPDF):
@@ -320,7 +322,7 @@ class LinearObservationModel(ObservationModel):
         return p_x
 
     def get_params(self) -> dict:
-        return {"C": self.C, "d": self.d, "Qx": self.Qx}
+        return {"C": self.C, "d": self.d, "Lx": self.Lx}
 
     @classmethod
     def from_dict(cls, params: dict):
@@ -328,7 +330,8 @@ class LinearObservationModel(ObservationModel):
         model = cls(Dx, Dz)
         model.C = params["C"]
         model.d = params["d"]
-        model.Qx = params["Qx"]
+        model.Lx = params["Lx"]
+        model.Qx = jnp.dot(model.Lx, model.Lx.T)
         model.update_observation_density()
         return model
 
@@ -368,6 +371,7 @@ class LSEMObservationModel(LinearObservationModel):
         self.Dx, self.Dz, self.Dk = Dx, Dz, Dk
         self.Dphi = self.Dk + self.Dz
         self.Qx = noise_x**2 * jnp.eye(self.Dx)
+        self.Lx = jnp.linalg.cholesky(self.Qx)
         self.lambda_W = lambda_W
         self.C = jnp.array(np.random.randn(self.Dx, self.Dphi))
         if self.Dx == self.Dz:
@@ -398,6 +402,7 @@ class LSEMObservationModel(LinearObservationModel):
         :type X: jnp.ndarray
         """
         self.Qx = jit(self._update_Qx)(X, smooth_dict)
+        self.Lx = jnp.linalg.cholesky(self.Qx)
         self.C, self.d = jit(self._update_Cd)(X, smooth_dict)
         self.update_observation_density()
         self._update_kernel_params(X, smooth_dict)
@@ -530,7 +535,8 @@ class LSEMObservationModel(LinearObservationModel):
         model = cls(Dx, Dz, Dk)
         model.C = params["C"]
         model.d = params["d"]
-        model.Qx = params["Qx"]
+        model.Lx = params["Lx"]
+        model.Qx = jnp.dot(model.Lx, model.Lx.T)
         model.W = params["W"]
         model.update_observation_density()
         return model
@@ -574,6 +580,7 @@ class LRBFMObservationModel(LSEMObservationModel):
         self.Dx, self.Dz, self.Dk = Dx, Dz, Dk
         self.Dphi = self.Dk + self.Dz
         self.Qx = noise_z**2 * jnp.eye(self.Dx)
+        self.Lx = jnp.linalg.cholesky(self.Qx)
         self.C = jnp.array(np.random.randn(self.Dx, self.Dphi))
         if self.Dx == self.Dz:
             self.C = self.C.at[:, : self.Dz].set(jnp.eye(self.Dx))
@@ -668,7 +675,7 @@ class LRBFMObservationModel(LSEMObservationModel):
         return {
             "C": self.C,
             "d": self.d,
-            "Qx": self.Qx,
+            "Lx": self.Lx,
             "mu": self.mu,
             "log_length_scale": self.log_length_scale,
         }
@@ -681,7 +688,8 @@ class LRBFMObservationModel(LSEMObservationModel):
         model = cls(Dx, Dz, Dk)
         model.C = params["C"]
         model.d = params["d"]
-        model.Qx = params["Qx"]
+        model.Lx = params["Lx"]
+        model.Qx = jnp.dot(model.Lx, model.Lx.T)
         model.mu = params["mu"]
         model.log_length_scale = params["log_length_scale"]
         model.update_observation_density()

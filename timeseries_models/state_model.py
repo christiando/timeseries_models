@@ -113,6 +113,7 @@ class LinearStateModel(StateModel):
         """
         self.Dz = Dz
         self.Qz = noise_z**2 * jnp.eye(self.Dz)
+        self.Lz = jnp.linalg.cholesky(self.Qz)
         self.A, self.b = 0.9 * jnp.eye(self.Dz), jnp.zeros((self.Dz,))
         self.state_density = conditional.ConditionalGaussianPDF(
             M=jnp.array([self.A]), b=jnp.array([self.b]), Sigma=jnp.array([self.Qz])
@@ -228,6 +229,7 @@ class LinearStateModel(StateModel):
         self.A = jit(self._update_A)(smooth_dict, two_step_smooth_dict, **kwargs)
         self.b = jit(self._update_b)(smooth_dict, **kwargs)
         self.Qz = jit(self._update_Qz)(two_step_smooth_dict, **kwargs)
+        self.Lz = jnp.linalg.cholesky(self.Qz)
         self.update_state_density()
 
     def _update_A(self, smooth_dict: dict, two_step_smooth_dict: dict, **kwargs):
@@ -318,7 +320,7 @@ class LinearStateModel(StateModel):
         return {
             "A": self.A,
             "b": self.b,
-            "Qz": self.Qz,
+            "Lz": self.Lz,
         }
 
     @classmethod
@@ -327,7 +329,8 @@ class LinearStateModel(StateModel):
         model = cls(Dz=Dz)
         model.A = params["A"]
         model.b = params["b"]
-        model.Qz = params["Qz"]
+        model.Lz = params["Lz"]
+        model.Qz = jnp.dot(model.Lz, model.Lz.T)
         model.update_state_density()
         return model
 
@@ -365,6 +368,7 @@ class NNControlStateModel(LinearStateModel):
     ):
         self.Dz = Dz
         self.Qz = noise_z**2 * jnp.eye(self.Dz)
+        self.Lz = jnp.linalg.cholesky(self.Qz)
         self.Du = Du
         self.control_func_hk = self._setup_control_func(control_func)
         dummy_input = jnp.ones([1, Du])
@@ -413,6 +417,7 @@ class NNControlStateModel(LinearStateModel):
             smooth_dict, two_step_smooth_dict, control_z, **kwargs
         )
         self.Qz = self._update_Qz(two_step_smooth_dict, control_z, **kwargs)
+        self.Lz = jnp.linalg.cholesky(self.Qz)
         self.update_state_density()
 
     def update_state_density(self):
@@ -579,6 +584,7 @@ class LSEMStateModel(LinearStateModel):
         self.Dz, self.Dk = Dz, Dk
         self.Dphi = self.Dk + self.Dz
         self.Qz = noise_z**2 * jnp.eye(self.Dz)
+        self.Lz = jnp.linalg.cholesky(self.Qz)
         self.lambda_W = lambda_W
         self.A = jnp.array(np.random.randn(self.Dz, self.Dphi))
         self.A = self.A.at[:, : self.Dz].set(jnp.eye(self.Dz))
@@ -609,6 +615,7 @@ class LSEMStateModel(LinearStateModel):
         """
         self.A, self.b = jit(self._update_Ab)(smooth_dict, two_step_smooth_dict)
         self.Qz = jit(self._update_Qz)(smooth_dict, two_step_smooth_dict)
+        self.Lz = jnp.linalg.cholesky(self.Qz)
         self.update_state_density()
         self._update_kernel_params(smooth_dict, two_step_smooth_dict)
         self.update_state_density()
@@ -780,7 +787,7 @@ class LSEMStateModel(LinearStateModel):
             "A": self.A,
             "b": self.b,
             "W": self.W,
-            "Qz": self.Qz,
+            "Lz": self.Lz,
         }
 
     @classmethod
@@ -791,7 +798,8 @@ class LSEMStateModel(LinearStateModel):
         model.A = params["A"]
         model.b = params["b"]
         model.W = params["W"]
-        model.Qz = params["Qz"]
+        model.Lz = params["Lz"]
+        model.Qz = jnp.dot(model.Lz, model.Lz.T)
         model.update_state_density()
         return model
 
@@ -837,6 +845,7 @@ class LRBFMStateModel(LSEMStateModel):
         self.Dz, self.Dk = Dz, Dk
         self.Dphi = self.Dk + self.Dz
         self.Qz = noise_z**2 * jnp.eye(self.Dz)
+        self.Lz = jnp.linalg.cholesky(self.Qz)
         self.A = jnp.array(np.random.randn(self.Dz, self.Dphi))
         self.A = self.A.at[:, : self.Dz].set(jnp.eye(self.Dz))
         self.b = jnp.zeros((self.Dz,))
@@ -959,7 +968,7 @@ class LRBFMStateModel(LSEMStateModel):
             "b": self.b,
             "mu": self.mu,
             "log_length_scale": self.log_length_scale,
-            "Qz": self.Qz,
+            "Lz": self.Lz,
         }
 
     @classmethod
@@ -971,6 +980,7 @@ class LRBFMStateModel(LSEMStateModel):
         model.b = params["b"]
         model.mu = params["mu"]
         model.log_length_scale = params["log_length_scale"]
-        model.Qz = params["Qz"]
+        model.Lz = params["Lz"]
+        model.Qz = jnp.dot(model.Lz, model.Lz.T)
         model.update_state_density()
         return model

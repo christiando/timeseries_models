@@ -169,6 +169,7 @@ class StateSpaceModel:
         horizon: int = 1,
         observed_dims: jnp.ndarray = None,
         first_prediction_idx: int = 0,
+        return_as_dict: bool = False
     ):
         X, mu0, Sigma0, control_x, control_z = self._init(
             X,
@@ -193,20 +194,23 @@ class StateSpaceModel:
             )
         )
         data_predict_dict = predict_func(X, mu0, Sigma0, control_x, control_z)
-        data_prediction_densities = []
-        num_batches = X.shape[0]
-        for ibatch in range(num_batches):
-            batch_density = pdf.GaussianPDF(
-                Sigma=data_predict_dict["Sigma"][ibatch],
-                mu=data_predict_dict["mu"][ibatch],
-                Lambda=data_predict_dict["Lambda"][ibatch],
-                ln_det_Sigma=data_predict_dict["ln_det_Sigma"][ibatch],
-            )
-            data_prediction_densities.append(batch_density)
-        if num_batches == 1:
-            return data_prediction_densities[0]
+        if return_as_dict:
+            return data_predict_dict
         else:
-            return data_prediction_densities
+            data_prediction_densities = []
+            num_batches = X.shape[0]
+            for ibatch in range(num_batches):
+                batch_density = pdf.GaussianPDF(
+                    Sigma=data_predict_dict["Sigma"][ibatch],
+                    mu=data_predict_dict["mu"][ibatch],
+                    Lambda=data_predict_dict["Lambda"][ibatch],
+                    ln_det_Sigma=data_predict_dict["ln_det_Sigma"][ibatch],
+                )
+                data_prediction_densities.append(batch_density)
+            if num_batches == 1:
+                return data_prediction_densities[0]
+            else:
+                return data_prediction_densities
 
     def _predict(
         self,
@@ -680,7 +684,19 @@ class StateSpaceModel:
         z_sample, X_sample = result
 
         return z_sample, X_sample
+    
+    def get_params(self):
+        """Get the parameters of the model.
 
+        :return: Parameters of the model.
+        :rtype: dict
+        """
+        return {"sm_params": self.sm.get_params(), "om_params": self.om.get_params()}
+
+    def set_params(self, params: dict):
+        self.om = self.om.from_dict(params["om_params"])
+        self.sm = self.sm.from_dict(params["sm_params"])
+        
     def save(self, model_name: str, path: str = "", overwrite: bool = False):
         """Save the model.
 
@@ -697,9 +713,8 @@ class StateSpaceModel:
                 "File already exists. Pick another name or indicate overwrite."
             )
         else:
-            sm_params = self.sm.get_params()
-            om_params = self.om.get_params()
-            model_dict = {"sm_params": sm_params, "om_params": om_params} | {
+            params = self.get_params()
+            model_dict = params | {
                 "sm_class": self.sm.__class__.__name__,
                 "om_class": self.om.__class__.__name__,
             }
