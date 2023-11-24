@@ -91,9 +91,37 @@ class ObservationModel:
         """Creates an observation model from a dictionary of parameters."""
         raise NotImplementedError("Must be implemented.")
 
+    @staticmethod
+    def mat_to_cholvec(mat: jnp.ndarray) -> jnp.ndarray:
+        """Converts a lower triangular matrix to a vector.
+
+        :param mat: Lower triangular matrix.
+        :type mat: jnp.ndarray
+        :return: Vectorized lower triangular matrix.
+        :rtype: jnp.ndarray
+        """
+        L = jnp.linalg.cholesky(mat)
+        vec = L[jnp.tril_indices_from(L)]
+        return vec
+
+    @staticmethod
+    def cholvec_to_mat(vec: jnp.ndarray, n_dim: int) -> jnp.ndarray:
+        """Converts a vectorized lower triangular matrix to a matrix.
+
+        :param vec: Vectorized lower triangular matrix.
+        :type vec: jnp.ndarray
+        :param n_dim: Dimensionality of matrix.
+        :type n_dim: int
+        :return: Matrix.
+        :rtype: jnp.ndarray
+        """
+        L = jnp.zeros((n_dim, n_dim))
+        M = L.at[jnp.tril_indices_from(L)].set(vec)
+        return M @ M.T
+
 
 class LinearObservationModel(ObservationModel):
-    def __init__(self, Dx: int, Dz: int, noise_x: float = 1.0):
+    def __init__(self, Dx: int, Dz: int, noise_x: float = 1.0, delta: float = 0):
         """This class implements a linear observation model, where the observations are generated as
 
             x_t = C z_t + d + xi_t     with      xi_t ~ N(0,Qx).
@@ -111,15 +139,11 @@ class LinearObservationModel(ObservationModel):
         else:
             self.C = jnp.array(np.random.randn(Dx, Dz))
         self.d = jnp.zeros(Dx)
-        self.Qx = noise_x**2 * jnp.eye(self.Dx)
-        self.Lx = jnp.linalg.cholesky(self.Qx)
-        self.observation_density = conditional.ConditionalGaussianPDF(
-            M=jnp.array([self.C]), b=jnp.array([self.d]), Sigma=jnp.array([self.Qx])
-        )
-        self.Qx_inv, self.ln_det_Qx = (
-            self.observation_density.Lambda[0],
-            self.observation_density.ln_det_Sigma[0],
-        )
+        self.delta = delta
+        self.Qx = noise_x**2 * jnp.eye(self.Dx) + self.delta * jnp.eye(self.Dx)
+        self.Lx = self.mat_to_cholvec(self.Qx)
+        
+        self.update_observation_density()
 
     def filtering(
         self, prediction_density: pdf.GaussianPDF, x_t: jnp.ndarray, **kwargs
@@ -210,7 +234,7 @@ class LinearObservationModel(ObservationModel):
         self.C = jit(self._update_C)(X, smooth_dict)
         self.d = jit(self._update_d)(X, smooth_dict)
         self.Qx = jit(self._update_Qx)(X, smooth_dict)
-        self.Lx = jnp.linalg.cholesky(self.Qx)
+        self.Lx = self.mat_to_cholvec(self.Qx)
         self.update_observation_density()
 
     def _update_C(self, X, smooth_dict: pdf.GaussianPDF):
@@ -283,8 +307,9 @@ class LinearObservationModel(ObservationModel):
 
     def update_observation_density(self):
         """Updates the emission density."""
+        Sigma = self.Qx + self.delta * jnp.eye(self.Dx)
         self.observation_density = conditional.ConditionalGaussianPDF(
-            M=jnp.array([self.C]), b=jnp.array([self.d]), Sigma=jnp.array([self.Qx])
+            M=jnp.array([self.C]), b=jnp.array([self.d]), Sigma=jnp.array([Sigma])
         )
         self.Qx_inv, self.ln_det_Qx = (
             self.observation_density.Lambda[0],
@@ -331,7 +356,7 @@ class LinearObservationModel(ObservationModel):
         model.C = params["C"]
         model.d = params["d"]
         model.Lx = params["Lx"]
-        model.Qx = jnp.dot(model.Lx, model.Lx.T)
+        model.Qx = cls.cholvec_to_mat(model.Lx, Dx)
         model.update_observation_density()
         return model
 
