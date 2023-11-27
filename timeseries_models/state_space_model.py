@@ -5,7 +5,6 @@ from timeseries_models import observation_model, state_model
 from gaussian_toolbox import pdf
 import pickle
 import os
-import numpy as onp
 import time
 from typing import Union, Tuple, List
 

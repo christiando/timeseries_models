@@ -4,7 +4,8 @@ from typing import Tuple
 from scipy.optimize import minimize_scalar
 from jax import numpy as jnp
 from jax import scipy as jsc
-import numpy as np
+
+# import numpy as np
 from jax import lax
 from jax import jit, grad, vmap
 from gaussian_toolbox import (
@@ -121,7 +122,14 @@ class ObservationModel:
 
 
 class LinearObservationModel(ObservationModel):
-    def __init__(self, Dx: int, Dz: int, noise_x: float = 1.0, delta: float = 0):
+    def __init__(
+        self,
+        Dx: int,
+        Dz: int,
+        noise_x: float = 1.0,
+        delta: float = 0,
+        key=random.PRNGKey(0),
+    ):
         """This class implements a linear observation model, where the observations are generated as
 
             x_t = C z_t + d + xi_t     with      xi_t ~ N(0,Qx).
@@ -137,12 +145,13 @@ class LinearObservationModel(ObservationModel):
         if Dx == Dz:
             self.C = jnp.eye(Dx)
         else:
-            self.C = jnp.array(np.random.randn(Dx, Dz))
+            key, subkey = random.split(key)
+            self.C = random.normal(subkey, (Dx, Dz))
         self.d = jnp.zeros(Dx)
         self.delta = delta
         self.Qx = noise_x**2 * jnp.eye(self.Dx) + self.delta * jnp.eye(self.Dx)
         self.Lx = self.mat_to_cholvec(self.Qx)
-        
+
         self.update_observation_density()
 
     def filtering(
@@ -369,6 +378,7 @@ class LSEMObservationModel(LinearObservationModel):
         Dk: int,
         noise_x: float = 1.0,
         lambda_W: float = 0.0,
+        key: random.PRNGKey = random.PRNGKey(0),
     ):
         """
         This implements a linear+squared exponential mean (LSEM) observation model
@@ -398,15 +408,18 @@ class LSEMObservationModel(LinearObservationModel):
         self.Qx = noise_x**2 * jnp.eye(self.Dx)
         self.Lx = jnp.linalg.cholesky(self.Qx)
         self.lambda_W = lambda_W
-        self.C = jnp.array(np.random.randn(self.Dx, self.Dphi))
+        key, subkey = random.split(key)
+        self.C = random.normal(subkey, shape=(self.Dx, self.Dphi))
         if self.Dx == self.Dz:
             self.C = self.C.at[:, : self.Dz].set(jnp.eye(self.Dx))
         else:
+            key, subkey = random.split(key)
             self.C = self.C.at[:, : self.Dz].set(
-                jnp.array(np.random.randn(self.Dx, self.Dz))
+                random.normal(subkey, (self.Dx, self.Dz))
             )
         self.d = jnp.zeros((self.Dx,))
-        self.W = jnp.array(np.random.randn(self.Dk, self.Dz + 1))
+        key, subkey = random.split(key)
+        self.W = random.normal(subkey, (self.Dk, self.Dz + 1))
         self.observation_density = approximate_conditional.LSEMGaussianConditional(
             M=jnp.array([self.C]),
             b=jnp.array([self.d]),
@@ -575,6 +588,7 @@ class LRBFMObservationModel(LSEMObservationModel):
         Dk: int,
         noise_z: float = 1.0,
         kernel_type: bool = "isotropic",
+        key=random.PRNGKey(0),
     ):
         """This implements a linear+RBF mean (LRBFM) observation model
 
@@ -606,22 +620,26 @@ class LRBFMObservationModel(LSEMObservationModel):
         self.Dphi = self.Dk + self.Dz
         self.Qx = noise_z**2 * jnp.eye(self.Dx)
         self.Lx = jnp.linalg.cholesky(self.Qx)
-        self.C = jnp.array(np.random.randn(self.Dx, self.Dphi))
+        key, subkey = random.split(key)
+        self.C = random.normal(subkey(self.Dx, self.Dphi))
         if self.Dx == self.Dz:
             self.C = self.C.at[:, : self.Dz].set(jnp.eye(self.Dx))
         else:
+            key, subkey = random.split(key)
             self.C = self.C.at[:, : self.Dz].set(
-                jnp.array(np.random.randn(self.Dx, self.Dz))
+                random.normal(subkey, (self.Dx, self.Dz))
             )
         self.d = jnp.zeros((self.Dx,))
-        self.mu = jnp.array(np.random.randn(self.Dk, self.Dz))
+        key, subkey = random.split(key)
+        self.mu = random.normal(subkey, (self.Dk, self.Dz))
         self.kernel_type = kernel_type
+        key, subkey = random.split(key)
         if self.kernel_type == "scalar":
-            self.log_length_scale = jnp.array(np.random.randn(1, 1))
+            self.log_length_scale = random.normal(subkey, (1, 1))
         elif self.kernel_type == "isotropic":
-            self.log_length_scale = jnp.array(np.random.randn(self.Dk, 1))
+            self.log_length_scale = random.normal(subkey, (self.Dk, 1))
         elif self.kernel_type == "anisotropic":
-            self.log_length_scale = jnp.array(np.random.randn(self.Dk, self.Dz))
+            self.log_length_scale = random.normal(subkey, (self.Dk, self.Dz))
         else:
             raise NotImplementedError("Kernel type not implemented.")
 

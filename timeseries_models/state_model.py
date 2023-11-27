@@ -3,7 +3,6 @@ from jax import numpy as jnp
 import jax
 from jax import vmap, jit, random, lax
 import haiku as hk
-import numpy as np
 from typing import Tuple
 from gaussian_toolbox.utils.jax_minimize_wrapper import minimize
 
@@ -611,16 +610,19 @@ class LSEMStateModel(LinearStateModel):
         noise_z: float = 1.0,
         lambda_W: float = 0.0,
         delta: float = 0.0,
+        key=random.PRNGKey(42),
     ):
         self.Dz, self.Dk = Dz, Dk
         self.Dphi = self.Dk + self.Dz
         self.Qz = noise_z**2 * jnp.eye(self.Dz)
         self.Lz = self.from_mat_to_cholvec(self.Qz)
         self.lambda_W = lambda_W
-        self.A = jnp.array(np.random.randn(self.Dz, self.Dphi))
+        key, subkey = random.split(key)
+        self.A = random.normal(subkey, (self.Dz, self.Dphi))
         self.A = self.A.at[:, : self.Dz].set(jnp.eye(self.Dz))
         self.b = jnp.zeros((self.Dz,))
-        self.W = jnp.array(np.random.randn(self.Dk, self.Dz + 1))
+        key, subkey = random.split(key)
+        self.W = random.normal(subkey, (self.Dk, self.Dz + 1))
         self.delta = delta
         self.update_state_density()
 
@@ -865,32 +867,38 @@ class LRBFMStateModel(LSEMStateModel):
         Dk: int,
         noise_z: float = 1.0,
         kernel_type: bool = "isotropic",
+        key=random.PRNGKey(42),
     ):
         self.Dz, self.Dk = Dz, Dk
         self.Dphi = self.Dk + self.Dz
         self.Qz = noise_z**2 * jnp.eye(self.Dz)
         self.Lz = self.from_mat_to_cholvec(self.Qz)
-        self.A = jnp.array(np.random.randn(self.Dz, self.Dphi))
+        key, subkey = random.split(key)
+        self.A = random.normal(subkey, (self.Dz, self.Dphi))
         self.A = self.A.at[:, : self.Dz].set(jnp.eye(self.Dz))
         self.b = jnp.zeros((self.Dz,))
-        self.mu = jnp.array(np.random.randn(self.Dk, self.Dz))
+        key, subkey = random.split(key)
+        self.mu = random.normal(subkey, (self.Dk, self.Dz))
         self.kernel_type = kernel_type
+        key, subkey = random.split(key)
         if self.kernel_type == "scalar":
-            self.log_length_scale = jnp.array(
-                np.random.randn(
+            self.log_length_scale = random.normal(
+                subkey,
+                (
                     1,
                     1,
-                )
+                ),
             )
         elif self.kernel_type == "isotropic":
-            self.log_length_scale = jnp.array(
-                np.random.randn(
+            self.log_length_scale = random.normal(
+                subkey,
+                (
                     self.Dk,
                     1,
-                )
+                ),
             )
         elif self.kernel_type == "anisotropic":
-            self.log_length_scale = jnp.array(np.random.randn(self.Dk, self.Dz))
+            self.log_length_scale = random.normal(subkey, (self.Dk, self.Dz))
         else:
             raise NotImplementedError("Kernel type not implemented.")
 
