@@ -169,7 +169,7 @@ class StateSpaceModel:
         horizon: int = 1,
         observed_dims: jnp.ndarray = None,
         first_prediction_idx: int = 0,
-        return_as_dict: bool = False
+        return_as_dict: bool = False,
     ):
         X, mu0, Sigma0, control_x, control_z = self._init(
             X,
@@ -684,7 +684,7 @@ class StateSpaceModel:
         z_sample, X_sample = result
 
         return z_sample, X_sample
-    
+
     def get_params(self):
         """Get the parameters of the model.
 
@@ -696,7 +696,7 @@ class StateSpaceModel:
     def set_params(self, params: dict):
         self.om = self.om.from_dict(params["om_params"])
         self.sm = self.sm.from_dict(params["sm_params"])
-        
+
     def save(self, model_name: str, path: str = "", overwrite: bool = False):
         """Save the model.
 
