@@ -141,7 +141,7 @@ class LinearStateModel(StateModel):
         self.Dz = Dz
         self.Qz = noise_z**2 * jnp.eye(self.Dz)
         self.Lz = self.from_mat_to_cholvec(self.Qz)
-        self.A, self.b = 0.9 * jnp.eye(self.Dz), jnp.zeros((self.Dz,))
+        self.A, self.b = jnp.eye(self.Dz), jnp.zeros((self.Dz,))
         self.delta = delta
         self.update_state_density()
 
