@@ -429,37 +429,6 @@ class StateSpaceModel:
             "ln_det_Sigma": jnp.concatenate([pz0.ln_det_Sigma, ln_det_Sigma_filter]),
         }
         return filter_dict
-
-    def _backward_step2(
-        self, carry: Tuple, vars_t: Tuple[int, jnp.array], filter_density
-    ) -> Tuple:
-        """Compute one step backward in time (smoothing).
-
-        :param carry: Observations and control variables
-        :type carry: Tuple
-        :param vars_t: Data for for constructing the smoothing density of the last (future) step
-        :type vars_t: Tuple
-        :return: Data of new smoothing density and smoothing and two step smoothing density.
-        :rtype: Tuple
-        """
-        t, uz_t = vars_t
-        cur_filter_density = filter_density.slice(jnp.array([t-1]))
-        post_smoothing_density = carry
-        cur_smoothing_density, cur_two_step_smoothing_density = self.sm.smoothing(
-            cur_filter_density, post_smoothing_density, u=uz_t
-        )
-        carry = cur_smoothing_density
-        result = (
-            cur_smoothing_density.Sigma[0],
-            cur_smoothing_density.mu[0],
-            cur_smoothing_density.Lambda[0],
-            cur_smoothing_density.ln_det_Sigma[0],
-            cur_two_step_smoothing_density.Sigma[0],
-            cur_two_step_smoothing_density.mu[0],
-            cur_two_step_smoothing_density.Lambda[0],
-            cur_two_step_smoothing_density.ln_det_Sigma[0],
-        )
-        return carry, result
     
     def _backward_step(
         self, carry: Tuple, vars_t: Tuple[int, jnp.array]
@@ -500,11 +469,6 @@ class StateSpaceModel:
         filter_density = pdf.GaussianPDF(**filter_dict)
         last_filter_density = filter_density.slice(jnp.array([-1]))
         cs_init = last_filter_density
-        #backward_step = lambda cs, vars_t: self._backward_step(
-        #    cs, vars_t, filter_density
-        #)
-        #t_range = jnp.arange(X.shape[0] - 1, -1, -1)
-        #_, result = lax.scan(backward_step, cs_init, (t_range, control_z[:-1][::-1, None]))
         
         backward_step = lambda cs, vars_t: self._backward_step(
             cs, vars_t
@@ -522,14 +486,6 @@ class StateSpaceModel:
             Lambda_two_step_smooth,
             ln_det_Sigma_two_step_smooth,
         ) = result
-        #new_smooth_density = pdf.GaussianPDF(
-        #    Sigma=jnp.concatenate([Sigma_smooth[::-1], last_filter_density.Sigma]),
-        #    mu=jnp.concatenate([mu_smooth[::-1], last_filter_density.mu]),
-        #    Lambda=jnp.concatenate([Lambda_smooth[::-1], last_filter_density.Lambda]),
-        #    ln_det_Sigma=jnp.concatenate(
-        #        [ln_det_Sigma_smooth[::-1], last_filter_density.ln_det_Sigma]
-        #    ),
-        #)
         new_smooth_density = pdf.GaussianPDF(
             Sigma=jnp.concatenate([Sigma_smooth[:], last_filter_density.Sigma]),
             mu=jnp.concatenate([mu_smooth[:], last_filter_density.mu]),
