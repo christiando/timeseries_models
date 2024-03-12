@@ -127,8 +127,7 @@ class StateSpaceModel:
             # Q_func = self.compute_predictive_log_likelihood(X[:,:-1], mu0, Sigma0, control_x, control_z)
             
             time_start = time.perf_counter()
-            # TODO: make the update valid again
-            _mu0, _Sigma0 = self.mstep(
+            mu0, Sigma0 = self.mstep(
                 X, smooth_dict, two_step_smooth_dict, control_x, control_z
             )
             mtime = time.perf_counter() - time_start
@@ -141,17 +140,16 @@ class StateSpaceModel:
             Q_list.append(Q_func)
             if iteration > 2:
                 converged = self._check_convergence(Q_list[-2], Q_func, conv_crit)
-                converged = False
             iteration += 1
             Q_func_old = Q_func
             if iteration % 1 == 0:
-                print("Iteration %d - Q-function=%.1f" % (iteration, Q_func_old))
+                print("Iteration %d - Log likelihood=%.1f" % (iteration, Q_func_old))
             tot_time = time.perf_counter() - time_start_total
             if timeit:
                 print(
                     "###################### \n"
                     + "E-step: Run Time %.1f \n" % etime
-                    + "Q-func: Run Time %.1f \n" % Q_time
+                    + "LLK-func: Run Time %.1f \n" % Q_time
                     + "M-step: Run Time %.1f \n" % mtime
                     + "Total: Run Time %.1f \n" % tot_time
                     + "###################### \n"
