@@ -241,9 +241,10 @@ class LinearObservationModel(ObservationModel):
         :raises NotImplementedError: Must be implemented.
         """
         self.C = jit(self._update_C)(X, smooth_dict)
-        self.d = jit(self._update_d)(X, smooth_dict)
         self.Qx = jit(self._update_Qx)(X, smooth_dict)
         self.Lx = self.mat_to_cholvec(self.Qx)
+        self.d = jit(self._update_d)(X, smooth_dict)
+        #self.C, self.d, self.Qx = C, d, Qx
         self.update_observation_density()
 
     def _update_C(self, X, smooth_dict: pdf.GaussianPDF):
@@ -257,14 +258,19 @@ class LinearObservationModel(ObservationModel):
         """
         stats = vmap(self._get_C_stats)(X, smooth_dict)
         A, b = self._reduce_batch_dims(stats)
-        C_new = jnp.linalg.solve(A, b).T
+        #C_new = jnp.linalg.solve(A, b).T
+        A_inv = jnp.linalg.pinv(A)
+        #print(b.shape, A_inv.shape)
+        C_new = jnp.dot(b.T, A_inv)
         return C_new
 
     def _get_C_stats(self, X: jnp.ndarray, smooth_dict: dict):
         smoothing_density = pdf.GaussianPDF(**smooth_dict)
-        Ezz = jnp.sum(smoothing_density.integrate("xx'")[1:], axis=0)
-        Ez = smoothing_density.integrate("x")[1:]
-        zx = jnp.sum(Ez[:, :, None] * (X[:, None] - self.d[None, None]), axis=0)
+        Ezz = jnp.sum(smoothing_density.integrate("xx'")[:], axis=0)
+        #Ez = smoothing_density.integrate("x")[:]
+        #zx = jnp.sum(Ez[:, :, None] * (X[:, None] - self.d[None, None]), axis=0)
+        Ez = smoothing_density.mu
+        zx = jnp.sum(Ez[:, :, None] * (X[:, None] - self.d[None]), axis=0)
         return Ezz, zx
 
     def _update_Qx(self, X: jnp.ndarray, smooth_dict: dict):
@@ -278,18 +284,18 @@ class LinearObservationModel(ObservationModel):
         """
         stats = vmap(self._get_Qx_stats)(X, smooth_dict)
         T, Qx = self._reduce_batch_dims(stats)
-        Qx = 0.5 * (Qx + Qx.T) / T
-        return Qx
+        #Qx = 0.5 * (Qx + Qx.T) / T
+        return Qx / T
 
     def _get_Qx_stats(self, X, smooth_dict):
         smoothing_density = pdf.GaussianPDF(**smooth_dict)
         T = X.shape[0]
         A = -self.C
-        a_t = jnp.concatenate([self.d[None], X]) - self.d[None]
+        a_t = X - self.d[None]
         Qx = jnp.sum(
             smoothing_density.integrate(
                 "(Ax+a)(Bx+b)'", A_mat=A, a_vec=a_t, B_mat=A, b_vec=a_t
-            )[1:],
+            )[:],
             axis=0,
         )
         return jnp.array([T]), Qx
@@ -311,7 +317,7 @@ class LinearObservationModel(ObservationModel):
     def _get_d_stats(self, X: jnp.array, smooth_dict):
         smoothing_density = pdf.GaussianPDF(**smooth_dict)
         T = X.shape[0]
-        diff_d = jnp.sum(X - jnp.dot(smoothing_density.mu[1:], self.C.T), axis=0)
+        diff_d = jnp.sum(X - jnp.dot(smoothing_density.mu[:], self.C.T), axis=0)
         return jnp.array([T]), diff_d
 
     def update_observation_density(self):

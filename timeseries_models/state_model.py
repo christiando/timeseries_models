@@ -249,9 +249,9 @@ class LinearStateModel(StateModel):
         :type two_step_smoothing_density: pdf.GaussianPDF
         """
         self.A = jit(self._update_A)(smooth_dict, two_step_smooth_dict, **kwargs)
-        self.b = jit(self._update_b)(smooth_dict, **kwargs)
         self.Qz = jit(self._update_Qz)(two_step_smooth_dict, **kwargs)
         self.Lz = self.from_mat_to_cholvec(self.Qz)
+        self.b = jit(self._update_b)(smooth_dict, **kwargs)
         self.update_state_density()
 
     def _update_A(self, smooth_dict: dict, two_step_smooth_dict: dict, **kwargs):
@@ -265,14 +265,19 @@ class LinearStateModel(StateModel):
         # Ezz = smoothing_density.integrate("xx'")
         stats = vmap(self._get_A_stats)(smooth_dict, two_step_smooth_dict)
         A, b = self._reduce_batch_dims(stats)
-        return jnp.linalg.solve(A, b).T
+        A_inv = jnp.linalg.pinv(A)
+        #print(b.shape, A_inv.shape)
+        A_new = jnp.dot(b.T, A_inv)
+        return A_new
 
     def _get_A_stats(self, smooth_dict: dict, two_step_smooth_dict: dict):
+        # T = smooth_dict["mu"].shape[0]
         smoothing_density = pdf.GaussianPDF(**smooth_dict)
         two_step_smoothing_density = pdf.GaussianPDF(**two_step_smooth_dict)
-        mu_b = smoothing_density.mu[:-1, None] * self.b[None, :, None]
+        mu_b = smoothing_density.mu[:-1, :, None] * self.b[None, None]
         Ezz_two_step = two_step_smoothing_density.integrate("xx'")
-        Ezz = Ezz_two_step[:, self.Dz :, self.Dz :]
+        #Ezz = Ezz_two_step[:, self.Dz :, self.Dz :]
+        Ezz = smoothing_density.integrate("xx'")[:-1]
         Ezz_cross = Ezz_two_step[:, self.Dz :, : self.Dz]
         A = jnp.mean(Ezz, axis=0)  # + 1e-2 * jnp.eye(self.Dz)
         b = jnp.mean(Ezz_cross - mu_b, axis=0)
@@ -308,14 +313,15 @@ class LinearStateModel(StateModel):
         stats = vmap(self._get_Qz_stats)(two_step_smooth_dict)
         # A_tilde = jnp.block([[jnp.eye(self.Dz), -self.A.T]])
         T, Qz = self._reduce_batch_dims(stats)
-        return 0.5 * (Qz + Qz.T) / T
+        #return 0.5 * (Qz + Qz.T) / T
+        return Qz / T
 
     def _get_Qz_stats(self, two_step_smooth_dict: dict):
+        T = two_step_smooth_dict["mu"].shape[0]
         two_step_smoothing_density = pdf.GaussianPDF(**two_step_smooth_dict)
         A_tilde = jnp.eye(2 * self.Dz, self.Dz)
         A_tilde = A_tilde.at[self.Dz :].set(-self.A.T)
         b_tilde = -self.b
-        T = two_step_smoothing_density.R
         Qz = jnp.sum(
             two_step_smoothing_density.integrate(
                 "(Ax+a)(Bx+b)'",
