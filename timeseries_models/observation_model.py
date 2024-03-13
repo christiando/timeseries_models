@@ -445,9 +445,11 @@ class LSEMObservationModel(LinearObservationModel):
         :param X: Observations.
         :type X: jnp.ndarray
         """
+        self.C = jit(self._update_C)(X, smooth_dict)
         self.Qx = jit(self._update_Qx)(X, smooth_dict)
         self.Lx = jnp.linalg.cholesky(self.Qx)
-        self.C, self.d = jit(self._update_Cd)(X, smooth_dict)
+        self.d = jit(self._update_d)(X, smooth_dict)
+        #self.C, self.d = jit(self._update_Cd)(X, smooth_dict)
         self.update_observation_density()
         self._update_kernel_params(X, smooth_dict)
         self.update_observation_density()
@@ -467,7 +469,7 @@ class LSEMObservationModel(LinearObservationModel):
 
     def _get_Qx_stats(self, X, smooth_dict):
         T = X.shape[0]
-        smoothing_density = pdf.GaussianPDF(smooth_dict).slice(jnp.arange(1, T + 1))
+        smoothing_density = pdf.GaussianPDF(smooth_dict)
         mu_x, Sigma_x = self.observation_density.get_expected_moments(smoothing_density)
         sum_mu_x2 = jnp.sum(
             Sigma_x - self.observation_density.Sigma + mu_x[:, None] * mu_x[:, :, None],
@@ -481,7 +483,88 @@ class LSEMObservationModel(LinearObservationModel):
             + sum_mu_x2
         )
         return jnp.array([T]), Qx
+    
+    def _update_C(self, X: jnp.array, smooth_dict: dict):
+        """Update observation observation matrix C and vector d.
 
+        C* = E[(X - d)phi(z)']E[phi(z)phi(z)']^{-1}
+        d* = E[(X - C phi(x))]
+
+        :param smoothing_density: The smoothing density  p(z_t|x_{1:T})
+        :type smoothing_density: pdf.GaussianPDF
+        :param X: Observations.
+        :type X: jnp.ndarray
+        """
+        stats = vmap(self._get_C_stats)(X, smooth_dict)
+        T, A, B = self._reduce_batch_dims(stats)
+        C = jnp.linalg.solve(A / T, B.T / T).T
+        return C
+    
+    def _get_C_stats(self, X: jnp.ndarray, smooth_dict: dict):
+        T = X.shape[0]
+        smoothing_density = pdf.GaussianPDF(smooth_dict)
+        Ex = smoothing_density.integrate("x")
+        # E[k(x)] [R, Dphi - Dx]
+        sd_k = smoothing_density.multiply(
+            self.observation_density.k_func, update_full=True
+        )
+        Ekx = sd_k.integrate().reshape((smoothing_density.R, self.Dphi - self.Dz))
+        # E[f(x)]
+        Ef = jnp.concatenate([Ex, Ekx], axis=1)
+        B = jnp.einsum("ab,ac->bc", X - self.d[None], Ef)
+        #### E[f(x)f(x)'] ####
+        # Linear terms E[xx']
+        Exx = jnp.sum(smoothing_density.integrate("xx'"), axis=0)
+        # Cross terms E[x k(x)']
+        Ekx = jnp.sum(
+            sd_k.integrate("x").reshape((smoothing_density.R, self.Dk, self.Dz)), axis=0
+        )
+        # kernel terms E[k(x)k(x)']
+        Ekk = jnp.sum(
+            sd_k.multiply(self.observation_density.k_func, update_full=True)
+            .integrate()
+            .reshape((smoothing_density.R, self.Dk, self.Dk)),
+            axis=0,
+        )
+        # Eff[:,self.Dx:,self.Dx:] = Ekk
+        A = jnp.block([[Exx, Ekx.T], [Ekx, Ekk]])
+        return jnp.array([T]), A, B
+
+    def _update_d(self, X: jnp.array, smooth_dict: dict):
+        """Update observation observation matrix C and vector d.
+
+        C* = E[(X - d)phi(z)']E[phi(z)phi(z)']^{-1}
+        d* = E[(X - C phi(x))]
+
+        :param smoothing_density: The smoothing density  p(z_t|x_{1:T})
+        :type smoothing_density: pdf.GaussianPDF
+        :param X: Observations.
+        :type X: jnp.ndarray
+        """
+        stats = vmap(self._get_d_stats)(X, smooth_dict)
+        T, Ef, sum_X = self._reduce_batch_dims(stats)
+        d = (sum_X - jnp.dot(self.C, Ef)) / T
+        return d
+    
+    def _get_d_stats(self, X: jnp.ndarray, smooth_dict: dict):
+        T = X.shape[0]
+        smoothing_density = pdf.GaussianPDF(smooth_dict)
+        Ex = smoothing_density.integrate("x")
+        # E[k(x)] [R, Dphi - Dx]
+        sd_k = smoothing_density.multiply(
+            self.observation_density.k_func, update_full=True
+        )
+        Ekx = sd_k.integrate().reshape((smoothing_density.R, self.Dphi - self.Dz))
+        # E[f(x)]
+        Ef = jnp.concatenate([Ex, Ekx], axis=1)
+        sum_Ef = jnp.sum(Ef, axis=0)
+        #### E[f(x)f(x)'] ####
+        # Linear terms E[xx']
+        # Cross terms E[x k(x)']
+        # Eff[:,self.Dx:,self.Dx:] = Ekk
+        sum_X = jnp.sum(X, axis=0)
+        return jnp.array([T]), sum_Ef, sum_X
+        
     def _update_Cd(self, X: jnp.array, smooth_dict: dict):
         """Update observation observation matrix C and vector d.
 
@@ -544,15 +627,13 @@ class LSEMObservationModel(LinearObservationModel):
 
         def objective(W, X, smooth_dict):
             T = X.shape[0]
-            smoothing_density = pdf.GaussianPDF(**smooth_dict).slice(
-                jnp.arange(1, T + 1)
-            )
+            smoothing_density = pdf.GaussianPDF(**smooth_dict)
             self.observation_density.w0 = W[:, 0]
             self.observation_density.W = W[:, 1:]
             self.observation_density.update_phi()
             return -self.compute_Q_function(
                 smoothing_density, X
-            ) + 0.5 * self.lambda_W * jnp.sum(W**2)
+            )  # + self.lambda_W * jnp.sum(W**2)
 
         batch_objective = lambda params, X, smooth_dict: jnp.mean(
             vmap(
@@ -697,9 +778,7 @@ class LRBFMObservationModel(LSEMObservationModel):
 
         def objective(params, X, smooth_dict):
             T = X.shape[0]
-            smoothing_density = pdf.GaussianPDF(**smooth_dict).slice(
-                jnp.arange(1, T + 1)
-            )
+            smoothing_density = pdf.GaussianPDF(**smooth_dict)
             self.observation_density.mu = params["mu"]
             self.observation_density.length_scale = jnp.exp(params["log_length_scale"])
             self.observation_density.update_phi()
