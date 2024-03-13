@@ -5,7 +5,6 @@ from timeseries_models import observation_model, state_model
 from gaussian_toolbox import pdf
 import pickle
 import os
-import numpy as onp
 import time
 from typing import Union, Tuple, List
 
@@ -68,7 +67,7 @@ class StateSpaceModel:
         Sigma0: jnp.ndarray = None,
         control_x: jnp.ndarray = None,
         control_z: jnp.ndarray = None,
-        horizon: int = 0,
+        horizon: int = 1,
     ) -> Tuple[jnp.ndarray]:
         assert X.shape[-1] == self.om.Dx
         assert control_x == None or control_x.ndim == X.ndim
@@ -76,15 +75,15 @@ class StateSpaceModel:
         if X.ndim == 2:
             X = X[None]
         if control_x == None:
-            control_x = jnp.empty((X.shape[0], X.shape[1] + horizon, 0))
+            control_x = jnp.empty((X.shape[0], X.shape[1] + horizon - 1, 0))
         elif control_x.ndim == 2:
             control_x = control_x[None]
         if control_z == None:
-            control_z = jnp.empty((X.shape[0], X.shape[1] + horizon, 0))
+            control_z = jnp.empty((X.shape[0], X.shape[1] + horizon - 1, 0))
         elif control_z.ndim == 2:
             control_z = control_x[None]
-        assert control_x.shape[1] == (X.shape[1] + horizon)
-        assert control_z.shape[1] == (X.shape[1] + horizon)
+        assert control_x.shape[1] == (X.shape[1] + horizon - 1)
+        assert control_z.shape[1] == (X.shape[1] + horizon - 1)
         if mu0 == None:
             mu0 = jnp.zeros((X.shape[0], 1, self.sm.Dz))
         if Sigma0 == None:
@@ -116,38 +115,41 @@ class StateSpaceModel:
         )
         converged = False
         iteration = 0
-        Q_list = []
-        Q_func_old = -jnp.inf
+        llk_list = []
+        llk_old = -jnp.inf
         while iteration < max_iter and not converged:
             time_start_total = time.perf_counter()
             smooth_dict, two_step_smooth_dict = self.estep(
                 X, mu0, Sigma0, control_x, control_z
             )
             etime = time.perf_counter() - time_start_total
-            time_start = time.perf_counter()
-            Q_func = self.compute_Q_function(
-                X, smooth_dict, two_step_smooth_dict, mu0, Sigma0, control_x, control_z
-            )
+            
             # Q_func = self.compute_predictive_log_likelihood(X[:,:-1], mu0, Sigma0, control_x, control_z)
-            Q_time = time.perf_counter() - time_start
+            
             time_start = time.perf_counter()
             mu0, Sigma0 = self.mstep(
                 X, smooth_dict, two_step_smooth_dict, control_x, control_z
             )
             mtime = time.perf_counter() - time_start
-            Q_list.append(Q_func)
+            time_start = time.perf_counter()
+            llk = self.compute_predictive_log_likelihood(X, mu0, Sigma0, control_x, control_z)
+            # self.compute_Q_function(
+            #     X, smooth_dict, two_step_smooth_dict, mu0, Sigma0, control_x, control_z
+            # )
+            llk_time = time.perf_counter() - time_start
+            llk_list.append(llk)
             if iteration > 2:
-                converged = self._check_convergence(Q_list[-2], Q_func, conv_crit)
+                converged = self._check_convergence(llk_list[-2], llk, conv_crit)
             iteration += 1
-            Q_func_old = Q_func
+            llk_old = llk
             if iteration % 1 == 0:
-                print("Iteration %d - Q-function=%.1f" % (iteration, Q_func_old))
+                print("Iteration %d - Log likelihood=%.1f" % (iteration, llk_old))
             tot_time = time.perf_counter() - time_start_total
             if timeit:
                 print(
                     "###################### \n"
                     + "E-step: Run Time %.1f \n" % etime
-                    + "Q-func: Run Time %.1f \n" % Q_time
+                    + "LLK-func: Run Time %.1f \n" % llk_time
                     + "M-step: Run Time %.1f \n" % mtime
                     + "Total: Run Time %.1f \n" % tot_time
                     + "###################### \n"
@@ -157,7 +159,7 @@ class StateSpaceModel:
         else:
             print("EM did converge.")
         p0_dict = {"Sigma": Sigma0, "mu": mu0}
-        return Q_list, p0_dict, smooth_dict, two_step_smooth_dict
+        return llk_list, p0_dict, smooth_dict, two_step_smooth_dict
 
     def predict(
         self,
@@ -169,7 +171,7 @@ class StateSpaceModel:
         horizon: int = 1,
         observed_dims: jnp.ndarray = None,
         first_prediction_idx: int = 0,
-        return_as_dict: bool = False
+        return_as_dict: bool = False,
     ):
         X, mu0, Sigma0, control_x, control_z = self._init(
             X,
@@ -225,8 +227,8 @@ class StateSpaceModel:
     ):
         T = X.shape[0]
         if first_prediction_idx == 0:
-            p0 = pdf.GaussianPDF(Sigma=Sigma0, mu=mu0)
-            init = p0
+            p0_pred = pdf.GaussianPDF(Sigma=Sigma0, mu=mu0)
+            init = p0_pred
             prediction_step = lambda cp, vars_t: self._prediction_step(
                 cp, vars_t, control_x, control_z, observed_dims, horizon
             )
@@ -239,12 +241,17 @@ class StateSpaceModel:
                 control_x[:first_prediction_idx],
                 control_z[:first_prediction_idx],
             )
-            p0_pred = pdf.GaussianPDF(
-                Sigma=filter_dict["Sigma"][-1:],
-                mu=filter_dict["mu"][-1:],
-                Lambda=filter_dict["Lambda"][-1:],
-                ln_det_Sigma=filter_dict["ln_det_Sigma"][-1:],
-            )
+            last_filter_density = pdf.GaussianPDF(Sigma=filter_dict["Sigma"][-1:], 
+                                                  mu=filter_dict["mu"][-1:], 
+                                                  Lambda=filter_dict["Lambda"][-1:], 
+                                                  ln_det_Sigma=filter_dict["ln_det_Sigma"][-1:])
+            p0_pred = self.sm.prediction(last_filter_density, u=control_z[first_prediction_idx])
+            #p0_pred = pdf.GaussianPDF(
+            #    Sigma=filter_dict["Sigma"][:],
+            #    mu=filter_dict["mu"][:],
+            #    Lambda=filter_dict["Lambda"][:],
+            #    ln_det_Sigma=filter_dict["ln_det_Sigma"][:],
+            #)
             init = p0_pred
             prediction_step = lambda cp, vars_t: self._prediction_step(
                 cp,
@@ -274,31 +281,32 @@ class StateSpaceModel:
         roll_out_step = lambda cp, vars_t: self._roll_out_horizon(
             cp, vars_t, control_z, t
         )
-        _, result = lax.scan(roll_out_step, carry, jnp.arange(horizon))
-        (
-            Sigma_prediction,
-            mu_prediction,
-            Lambda_prediction,
-            ln_det_Sigma_prediction,
-        ) = result
-        cur_prediction_density = pdf.GaussianPDF(
-            Sigma=Sigma_prediction[:1],
-            mu=mu_prediction[:1],
-            Lambda=Lambda_prediction[:1],
-            ln_det_Sigma=ln_det_Sigma_prediction[:1],
-        )
+        cur_prediction_density = carry
         cur_filter_density = self.om.partially_observed_filtering(
             cur_prediction_density, X_t[None], observed_dims, u=control_x[t]
         )
-        carry = cur_filter_density
-        horizon_prediction_density = pdf.GaussianPDF(
-            Sigma=Sigma_prediction[-1:],
-            mu=mu_prediction[-1:],
-            Lambda=Lambda_prediction[-1:],
-            ln_det_Sigma=ln_det_Sigma_prediction[-1:],
-        )
+        next_prediction_density = self.sm.prediction(cur_filter_density, u=control_z[t])   
+        if horizon > 1:
+            _, result = lax.scan(roll_out_step, carry, jnp.arange(horizon-1))
+            (
+                Sigma_prediction,
+                mu_prediction,
+                Lambda_prediction,
+                ln_det_Sigma_prediction,
+            ) = result
+            horizon_prediction_density = pdf.GaussianPDF(
+                Sigma=Sigma_prediction[-1:],
+                mu=mu_prediction[-1:],
+                Lambda=Lambda_prediction[-1:],
+                ln_det_Sigma=ln_det_Sigma_prediction[-1:],
+            )
+        else:
+            horizon_prediction_density = cur_prediction_density
+
+        carry = next_prediction_density
+        
         horizon_data_density = self.om.get_data_density(
-            horizon_prediction_density, u=control_x[t + horizon]
+            horizon_prediction_density, u=control_x[t + horizon - 1]
         )
         result = (
             horizon_data_density.Sigma[0],
@@ -398,10 +406,13 @@ class StateSpaceModel:
     ) -> dict:
         """Iterate forward, alternately doing prediction and filtering step."""
         pz0 = pdf.GaussianPDF(Sigma=Sigma0, mu=mu0)
-        init = pz0
+        init_density = self.om.filtering(
+            pz0, X[:1], u=control_x[:1]
+        )
+        #init = pz0
         forward_step = lambda cf, vars_t: self._forward_step(cf, vars_t)
         _, result = lax.scan(
-            forward_step, init, (X, control_x[:, None], control_z[:, None])
+            forward_step, init_density, (X[1:], control_x[1:, None], control_z[:-1, None])
         )
         (
             Sigma_filter,
@@ -410,15 +421,15 @@ class StateSpaceModel:
             ln_det_Sigma_filter,
         ) = result
         filter_dict = {
-            "Sigma": jnp.concatenate([pz0.Sigma, Sigma_filter]),
-            "mu": jnp.concatenate([pz0.mu, mu_filter]),
-            "Lambda": jnp.concatenate([pz0.Lambda, Lambda_filter]),
+            "Sigma": jnp.concatenate([init_density.Sigma, Sigma_filter]),
+            "mu": jnp.concatenate([init_density.mu, mu_filter]),
+            "Lambda": jnp.concatenate([init_density.Lambda, Lambda_filter]),
             "ln_det_Sigma": jnp.concatenate([pz0.ln_det_Sigma, ln_det_Sigma_filter]),
         }
         return filter_dict
-
+    
     def _backward_step(
-        self, carry: Tuple, vars_t: Tuple[int, jnp.array], filter_density
+        self, carry: Tuple, vars_t: Tuple[int, jnp.array]
     ) -> Tuple:
         """Compute one step backward in time (smoothing).
 
@@ -429,8 +440,9 @@ class StateSpaceModel:
         :return: Data of new smoothing density and smoothing and two step smoothing density.
         :rtype: Tuple
         """
-        t, uz_t = vars_t
-        cur_filter_density = filter_density.slice(jnp.array([t]))
+        t, uz_t, mu_f, Sigma_f, Lambda_f, ln_det_Sigma_f = vars_t
+        #filter_dict = {k: jnp.array(v) for k, v in filter_dict.items()}
+        cur_filter_density = pdf.GaussianPDF(Sigma=Sigma_f, mu=mu_f, Lambda=Lambda_f, ln_det_Sigma=ln_det_Sigma_f)
         post_smoothing_density = carry
         cur_smoothing_density, cur_two_step_smoothing_density = self.sm.smoothing(
             cur_filter_density, post_smoothing_density, u=uz_t
@@ -453,13 +465,15 @@ class StateSpaceModel:
     ) -> Tuple[dict]:
         """Iterate backward doing smoothing step."""
         filter_density = pdf.GaussianPDF(**filter_dict)
-        last_filter_density = filter_density.slice(jnp.array([X.shape[0]]))
+        last_filter_density = filter_density.slice(jnp.array([-1]))
         cs_init = last_filter_density
+        
         backward_step = lambda cs, vars_t: self._backward_step(
-            cs, vars_t, filter_density
+            cs, vars_t
         )
-        t_range = jnp.arange(X.shape[0] - 1, -1, -1)
-        _, result = lax.scan(backward_step, cs_init, (t_range, control_z[:, None]))
+        t_range = jnp.arange(0, X.shape[0]-1)
+        _, result = lax.scan(backward_step, cs_init, (t_range, control_z[:-1, None], filter_density.mu[:-1,None], 
+                                                      filter_density.Sigma[:-1,None], filter_density.Lambda[:-1,None], filter_density.ln_det_Sigma[:-1,None]), reverse=True)
         (
             Sigma_smooth,
             mu_smooth,
@@ -471,18 +485,16 @@ class StateSpaceModel:
             ln_det_Sigma_two_step_smooth,
         ) = result
         new_smooth_density = pdf.GaussianPDF(
-            Sigma=jnp.concatenate([Sigma_smooth[::-1], last_filter_density.Sigma]),
-            mu=jnp.concatenate([mu_smooth[::-1], last_filter_density.mu]),
-            Lambda=jnp.concatenate([Lambda_smooth[::-1], last_filter_density.Lambda]),
-            ln_det_Sigma=jnp.concatenate(
-                [ln_det_Sigma_smooth[::-1], last_filter_density.ln_det_Sigma]
-            ),
+            Sigma=jnp.concatenate([Sigma_smooth[:], last_filter_density.Sigma]),
+            mu=jnp.concatenate([mu_smooth[:], last_filter_density.mu]),
+            Lambda=jnp.concatenate([Lambda_smooth[:], last_filter_density.Lambda]),
+            ln_det_Sigma=jnp.concatenate([ln_det_Sigma_smooth[:], last_filter_density.ln_det_Sigma])
         )
         new_two_step_smooth_density = pdf.GaussianPDF(
-            Sigma=Sigma_two_step_smooth[::-1],
-            mu=mu_two_step_smooth[::-1],
-            Lambda=Lambda_two_step_smooth[::-1],
-            ln_det_Sigma=ln_det_Sigma_two_step_smooth[::-1],
+            Sigma=Sigma_two_step_smooth,
+            mu=mu_two_step_smooth,
+            Lambda=Lambda_two_step_smooth,
+            ln_det_Sigma=ln_det_Sigma_two_step_smooth,
         )
         return new_smooth_density.to_dict(), new_two_step_smooth_density.to_dict()
 
@@ -534,8 +546,8 @@ class StateSpaceModel:
         sm_Q = self.sm.compute_Q_function(
             smoothing_density, two_step_smoothing_density, control_z=control_z
         )
-        phi = smoothing_density.slice(jnp.arange(1, T + 1))
-        om_Q = self.om.compute_Q_function(phi, X, control_x=control_x)
+        #phi = smoothing_density.slice(jnp.arange(0, T))
+        om_Q = self.om.compute_Q_function(smoothing_density, X, control_x=control_x)
         total_Q = init_Q + sm_Q + om_Q
         return total_Q
 
@@ -684,7 +696,7 @@ class StateSpaceModel:
         z_sample, X_sample = result
 
         return z_sample, X_sample
-    
+
     def get_params(self):
         """Get the parameters of the model.
 
@@ -696,7 +708,7 @@ class StateSpaceModel:
     def set_params(self, params: dict):
         self.om = self.om.from_dict(params["om_params"])
         self.sm = self.sm.from_dict(params["sm_params"])
-        
+
     def save(self, model_name: str, path: str = "", overwrite: bool = False):
         """Save the model.
 

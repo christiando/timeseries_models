@@ -3,7 +3,6 @@ from jax import numpy as jnp
 import jax
 from jax import vmap, jit, random, lax
 import haiku as hk
-import numpy as np
 from typing import Tuple
 from gaussian_toolbox.utils.jax_minimize_wrapper import minimize
 
@@ -97,9 +96,37 @@ class StateModel:
     def from_dict(cls, params: dict):
         raise NotImplementedError("Must be implemented.")
 
+    @staticmethod
+    def from_mat_to_cholvec(mat: jnp.ndarray) -> jnp.ndarray:
+        """Converts a lower triangular matrix to a vector.
+
+        :param mat: Lower triangular matrix.
+        :type mat: jnp.ndarray
+        :return: Vectorized lower triangular matrix.
+        :rtype: jnp.ndarray
+        """
+        L = jnp.linalg.cholesky(mat)
+        vec = L[jnp.tril_indices_from(L)]
+        return vec
+
+    @staticmethod
+    def from_cholvec_to_mat(vec: jnp.ndarray, n_dim: int) -> jnp.ndarray:
+        """Converts a vectorized lower triangular matrix to a matrix.
+
+        :param vec: Vectorized lower triangular matrix.
+        :type vec: jnp.ndarray
+        :param n_dim: Dimensionality of matrix.
+        :type n_dim: int
+        :return: Matrix.
+        :rtype: jnp.ndarray
+        """
+        L = jnp.zeros((n_dim, n_dim))
+        M = L.at[jnp.tril_indices_from(L)].set(vec)
+        return M @ M.T
+
 
 class LinearStateModel(StateModel):
-    def __init__(self, Dz: int, noise_z: float = 1.0):
+    def __init__(self, Dz: int, noise_z: float = 1.0, delta: float = 0.0):
         r"""This implements a linear state transition model
 
         .. math::
@@ -113,15 +140,10 @@ class LinearStateModel(StateModel):
         """
         self.Dz = Dz
         self.Qz = noise_z**2 * jnp.eye(self.Dz)
-        self.Lz = jnp.linalg.cholesky(self.Qz)
-        self.A, self.b = 0.9 * jnp.eye(self.Dz), jnp.zeros((self.Dz,))
-        self.state_density = conditional.ConditionalGaussianPDF(
-            M=jnp.array([self.A]), b=jnp.array([self.b]), Sigma=jnp.array([self.Qz])
-        )
-        self.Qz_inv, self.ln_det_Qz = (
-            self.state_density.Lambda[0],
-            self.state_density.ln_det_Sigma[0],
-        )
+        self.Lz = self.from_mat_to_cholvec(self.Qz)
+        self.A, self.b = jnp.eye(self.Dz), jnp.zeros((self.Dz,))
+        self.delta = delta
+        self.update_state_density()
 
     def prediction(
         self, pre_filter_density: pdf.GaussianPDF, **kwargs
@@ -210,7 +232,7 @@ class LinearStateModel(StateModel):
         return jnp.sum(
             self.state_density.integrate_log_conditional(
                 two_step_smoothing_density,
-                p_x=smoothing_density.slice(jnp.arange(1, smoothing_density.R)),
+                p_x=smoothing_density.slice(jnp.arange(0, smoothing_density.R-1)),
             )
         )
 
@@ -227,9 +249,9 @@ class LinearStateModel(StateModel):
         :type two_step_smoothing_density: pdf.GaussianPDF
         """
         self.A = jit(self._update_A)(smooth_dict, two_step_smooth_dict, **kwargs)
-        self.b = jit(self._update_b)(smooth_dict, **kwargs)
         self.Qz = jit(self._update_Qz)(two_step_smooth_dict, **kwargs)
-        self.Lz = jnp.linalg.cholesky(self.Qz)
+        self.Lz = self.from_mat_to_cholvec(self.Qz)
+        self.b = jit(self._update_b)(smooth_dict, **kwargs)
         self.update_state_density()
 
     def _update_A(self, smooth_dict: dict, two_step_smooth_dict: dict, **kwargs):
@@ -243,14 +265,19 @@ class LinearStateModel(StateModel):
         # Ezz = smoothing_density.integrate("xx'")
         stats = vmap(self._get_A_stats)(smooth_dict, two_step_smooth_dict)
         A, b = self._reduce_batch_dims(stats)
-        return jnp.linalg.solve(A, b).T
+        A_inv = jnp.linalg.pinv(A)
+        #print(b.shape, A_inv.shape)
+        A_new = jnp.dot(b.T, A_inv)
+        return A_new
 
     def _get_A_stats(self, smooth_dict: dict, two_step_smooth_dict: dict):
+        # T = smooth_dict["mu"].shape[0]
         smoothing_density = pdf.GaussianPDF(**smooth_dict)
         two_step_smoothing_density = pdf.GaussianPDF(**two_step_smooth_dict)
-        mu_b = smoothing_density.mu[:-1, None] * self.b[None, :, None]
+        mu_b = smoothing_density.mu[:-1, :, None] * self.b[None, None]
         Ezz_two_step = two_step_smoothing_density.integrate("xx'")
-        Ezz = Ezz_two_step[:, self.Dz :, self.Dz :]
+        #Ezz = Ezz_two_step[:, self.Dz :, self.Dz :]
+        Ezz = smoothing_density.integrate("xx'")[:-1]
         Ezz_cross = Ezz_two_step[:, self.Dz :, : self.Dz]
         A = jnp.mean(Ezz, axis=0)  # + 1e-2 * jnp.eye(self.Dz)
         b = jnp.mean(Ezz_cross - mu_b, axis=0)
@@ -286,14 +313,15 @@ class LinearStateModel(StateModel):
         stats = vmap(self._get_Qz_stats)(two_step_smooth_dict)
         # A_tilde = jnp.block([[jnp.eye(self.Dz), -self.A.T]])
         T, Qz = self._reduce_batch_dims(stats)
-        return 0.5 * (Qz + Qz.T) / T
+        #return 0.5 * (Qz + Qz.T) / T
+        return Qz / T
 
     def _get_Qz_stats(self, two_step_smooth_dict: dict):
+        T = two_step_smooth_dict["mu"].shape[0]
         two_step_smoothing_density = pdf.GaussianPDF(**two_step_smooth_dict)
         A_tilde = jnp.eye(2 * self.Dz, self.Dz)
         A_tilde = A_tilde.at[self.Dz :].set(-self.A.T)
         b_tilde = -self.b
-        T = two_step_smoothing_density.R
         Qz = jnp.sum(
             two_step_smoothing_density.integrate(
                 "(Ax+a)(Bx+b)'",
@@ -308,8 +336,9 @@ class LinearStateModel(StateModel):
 
     def update_state_density(self):
         """Update the state density."""
+        Sigma_z = self.Qz + self.delta * jnp.eye(self.Dz)
         self.state_density = conditional.ConditionalGaussianPDF(
-            M=jnp.array([self.A]), b=jnp.array([self.b]), Sigma=jnp.array([self.Qz])
+            M=jnp.array([self.A]), b=jnp.array([self.b]), Sigma=jnp.array([Sigma_z])
         )
         self.Qz_inv, self.ln_det_Qz = (
             self.state_density.Lambda[0],
@@ -330,7 +359,7 @@ class LinearStateModel(StateModel):
         model.A = params["A"]
         model.b = params["b"]
         model.Lz = params["Lz"]
-        model.Qz = jnp.dot(model.Lz, model.Lz.T)
+        model.Qz = model.cholvec_to_mat(model.Lz, model.Dz)
         model.update_state_density()
         return model
 
@@ -368,7 +397,7 @@ class NNControlStateModel(LinearStateModel):
     ):
         self.Dz = Dz
         self.Qz = noise_z**2 * jnp.eye(self.Dz)
-        self.Lz = jnp.linalg.cholesky(self.Qz)
+        self.Lz = self.from_mat_to_cholvec(self.Qz)
         self.Du = Du
         self.control_func_hk = self._setup_control_func(control_func)
         dummy_input = jnp.ones([1, Du])
@@ -417,7 +446,7 @@ class NNControlStateModel(LinearStateModel):
             smooth_dict, two_step_smooth_dict, control_z, **kwargs
         )
         self.Qz = self._update_Qz(two_step_smooth_dict, control_z, **kwargs)
-        self.Lz = jnp.linalg.cholesky(self.Qz)
+        self.Lz = self.from_mat_to_cholvec(self.Qz)
         self.update_state_density()
 
     def update_state_density(self):
@@ -541,7 +570,7 @@ class NNControlStateModel(LinearStateModel):
         return jnp.sum(
             state_density.integrate_log_conditional(
                 two_step_smoothing_density,
-                p_x=smoothing_density.slice(jnp.arange(1, smoothing_density.R)),
+                p_x=smoothing_density.slice(jnp.arange(0, smoothing_density.R-1)),
             )
         )
 
@@ -580,26 +609,28 @@ class LSEMStateModel(LinearStateModel):
     :type noise_z: float, optional
     """
 
-    def __init__(self, Dz: int, Dk: int, noise_z: float = 1.0, lambda_W: float = 0.0):
+    def __init__(
+        self,
+        Dz: int,
+        Dk: int,
+        noise_z: float = 1.0,
+        lambda_W: float = 0.0,
+        delta: float = 0.0,
+        key=random.PRNGKey(42),
+    ):
         self.Dz, self.Dk = Dz, Dk
         self.Dphi = self.Dk + self.Dz
         self.Qz = noise_z**2 * jnp.eye(self.Dz)
-        self.Lz = jnp.linalg.cholesky(self.Qz)
+        self.Lz = self.from_mat_to_cholvec(self.Qz)
         self.lambda_W = lambda_W
-        self.A = jnp.array(np.random.randn(self.Dz, self.Dphi))
+        key, subkey = random.split(key)
+        self.A = random.normal(subkey, (self.Dz, self.Dphi))
         self.A = self.A.at[:, : self.Dz].set(jnp.eye(self.Dz))
         self.b = jnp.zeros((self.Dz,))
-        self.W = jnp.array(np.random.randn(self.Dk, self.Dz + 1))
-        self.state_density = approximate_conditional.LSEMGaussianConditional(
-            M=jnp.array([self.A]),
-            b=jnp.array([self.b]),
-            W=self.W,
-            Sigma=jnp.array([self.Qz]),
-        )
-        self.Qz_inv, self.ln_det_Qz = (
-            self.state_density.Lambda[0],
-            self.state_density.ln_det_Sigma[0],
-        )
+        key, subkey = random.split(key)
+        self.W = random.normal(subkey, (self.Dk, self.Dz + 1))
+        self.delta = delta
+        self.update_state_density()
 
     def update_hyperparameters(
         self, smooth_dict: dict, two_step_smooth_dict: dict, **kwargs
@@ -613,13 +644,30 @@ class LSEMStateModel(LinearStateModel):
         :param two_step_smoothing_density: The two point smoothing density :math:`p(Z_{t+1}, Z_t|X_{1:T})`.
         :type two_step_smoothing_density: pdf.GaussianPDF
         """
-        self.A, self.b = jit(self._update_Ab)(smooth_dict, two_step_smooth_dict)
+        self.A = jit(self._update_A)(smooth_dict, two_step_smooth_dict)
         self.Qz = jit(self._update_Qz)(smooth_dict, two_step_smooth_dict)
-        self.Lz = jnp.linalg.cholesky(self.Qz)
+        self.Lz = self.from_mat_to_cholvec(self.Qz)
+        self.b = jit(self._update_b)(smooth_dict)
         self.update_state_density()
         self._update_kernel_params(smooth_dict, two_step_smooth_dict)
         self.update_state_density()
 
+    def _update_A(self, smooth_dict: dict, two_step_smooth_dict: dict):
+        stats = jit(vmap(self._get_A_stats))(smooth_dict, two_step_smooth_dict)
+        T, Eff, Ezf, Ef = self._reduce_batch_dims(stats)
+        Ebf = (Ef[None] * self.b[:, None]) / T
+        A = jnp.linalg.solve(Eff / T, (Ezf - Ebf).T / T).T
+        # b = sd_mu / T - jnp.dot(A, Ef / T).T
+        return A
+    
+    def _update_b(self, smooth_dict: dict):
+        stats = jit(vmap(self._get_b_stats))(smooth_dict)
+        T, Ef, sd_mu = self._reduce_batch_dims(stats)
+        #Ebf = (Ef[None] * self.b[:, None]) / T
+        # A = jnp.linalg.solve(Eff / T, (Ezf - Ebf).T / T).T
+        b = sd_mu / T - jnp.dot(self.A, Ef / T).T
+        return b
+    
     def _update_Ab(self, smooth_dict: dict, two_step_smooth_dict: dict):
         stats = jit(vmap(self._get_Ab_stats))(smooth_dict, two_step_smooth_dict)
         T, Eff, Ezf, Ef, sd_mu = self._reduce_batch_dims(stats)
@@ -627,8 +675,8 @@ class LSEMStateModel(LinearStateModel):
         A = jnp.linalg.solve(Eff / T, (Ezf - Ebf).T / T).T
         b = sd_mu / T - jnp.dot(A, Ef / T).T
         return A, b
-
-    def _get_Ab_stats(self, smooth_dict: dict, two_step_smooth_dict: dict):
+    
+    def _get_A_stats(self, smooth_dict: dict, two_step_smooth_dict: dict):
         two_step_smoothing_density = pdf.GaussianPDF(**two_step_smooth_dict)
         T = two_step_smoothing_density.R
         smoothing_density = pdf.GaussianPDF(**smooth_dict).slice(jnp.arange(T))
@@ -656,7 +704,49 @@ class LSEMStateModel(LinearStateModel):
         sum_Ezz = jnp.sum(smoothing_density.integrate("xx'"), axis=0)
         sum_Ekk = jnp.sum(Ekk, axis=0)
         Eff = jnp.block([[sum_Ezz, sum_Ekz.T], [sum_Ekz, sum_Ekk]])
-        Eff += 0.001 * jnp.eye(Eff.shape[0])
+        #Eff += 0.001 * jnp.eye(Eff.shape[0])
+        return jnp.array([T]), Eff, Ezf, Ef
+
+    def _get_b_stats(self, smooth_dict: dict):
+        smoothing_density = pdf.GaussianPDF(**smooth_dict)
+        T = smoothing_density.R - 1
+        sd_k = smoothing_density.multiply(self.state_density.k_func, update_full=True)
+        Ek = jnp.sum(sd_k.integral_light().reshape((T+1, self.Dk))[:-1], axis=0)
+        Ez = jnp.sum(smoothing_density.integrate("x")[:-1], axis=0)
+        Ef = jnp.concatenate([Ez, Ek])
+        #Eff += 0.001 * jnp.eye(Eff.shape[0])
+        sd_mu = jnp.sum(smoothing_density.mu[1:], axis=0)
+        return jnp.array([T]), Ef, sd_mu
+    
+    def _get_Ab_stats(self, smooth_dict: dict, two_step_smooth_dict: dict):
+        two_step_smoothing_density = pdf.GaussianPDF(**two_step_smooth_dict)
+        T = two_step_smoothing_density.R
+        smoothing_density = pdf.GaussianPDF(**smooth_dict).slice(jnp.arange(T))
+        joint_k_func = self._get_joint_k_function()
+        two_step_k_measure = two_step_smoothing_density.multiply(
+            joint_k_func, update_full=True
+        )
+        Ekz = jnp.sum(
+            two_step_k_measure.integrate("x").reshape((T, self.Dk, 2 * self.Dz)), axis=0
+        )
+        Ekz_future, Ekz_past = Ekz[:, : self.Dz], Ekz[:, self.Dz :]
+        sd_k = smoothing_density.multiply(self.state_density.k_func, update_full=True)
+        sd_kk = sd_k.multiply(self.state_density.k_func, update_full=True)
+        Ek = jnp.sum(sd_k.integral_light().reshape((T, self.Dk)), axis=0)
+        Ez = jnp.sum(smoothing_density.integrate("x")[:-1], axis=0)
+        Ef = jnp.concatenate([Ez, Ek])
+        # E[z f(z)']
+        Ezz_cross = jnp.sum(
+            two_step_smoothing_density.integrate("xx'")[:, self.Dz :, : self.Dz], axis=0
+        )
+        Ezf = jnp.concatenate([Ezz_cross.T, Ekz_future.T], axis=1)
+        Ekk = sd_kk.integral_light().reshape((T, self.Dk, self.Dk))
+        Ekz = sd_k.integrate("x").reshape((T, self.Dk, self.Dz))
+        sum_Ekz = jnp.sum(Ekz, axis=0)
+        sum_Ezz = jnp.sum(smoothing_density.integrate("xx'"), axis=0)
+        sum_Ekk = jnp.sum(Ekk, axis=0)
+        Eff = jnp.block([[sum_Ezz, sum_Ekz.T], [sum_Ekz, sum_Ekk]])
+        #Eff += 0.001 * jnp.eye(Eff.shape[0])
         sd_mu = jnp.sum(smoothing_density.mu[1:], axis=0)
         return jnp.array([T]), Eff, Ezf, Ef, sd_mu
 
@@ -670,8 +760,9 @@ class LSEMStateModel(LinearStateModel):
         """
         stats = vmap(self._get_Qz_stats)(smooth_dict, two_step_smooth_dict)
         T, Qz = self._reduce_batch_dims(stats)
-        return 0.5 * (Qz + Qz.T) / T
-
+        #return 0.5 * (Qz + Qz.T) / T
+        return Qz / T
+    
     def _get_Qz_stats(self, smooth_dict: dict, two_step_smooth_dict: dict):
         two_step_smoothing_density = pdf.GaussianPDF(**two_step_smooth_dict)
         T = two_step_smoothing_density.R
@@ -713,8 +804,8 @@ class LSEMStateModel(LinearStateModel):
         )
         Qz_kk = jnp.dot(jnp.dot(self.A[:, self.Dz :], Ekk), self.A[:, self.Dz :].T)
         Qz = Qz_lin + Qz_kk - Qz_k_lin_err - Qz_k_lin_err.T
-        Qz_arr = 0.5 * (Qz + Qz.T)
-        return jnp.array([T]), Qz_arr
+        # Qz_arr = 0.5 * (Qz + Qz.T)
+        return jnp.array([T]), Qz
 
     def _get_joint_k_function(self):
         zero_arr = jnp.zeros([self.Dk, 2 * self.Dz])
@@ -727,11 +818,12 @@ class LSEMStateModel(LinearStateModel):
 
     def update_state_density(self):
         """Update the state density."""
+        Sigma_z = self.Qz + self.delta * jnp.eye(self.Dz)
         self.state_density = approximate_conditional.LSEMGaussianConditional(
             M=jnp.array([self.A]),
             b=jnp.array([self.b]),
             W=self.W,
-            Sigma=jnp.array([self.Qz]),
+            Sigma=jnp.array([Sigma_z]),
         )
         self.Qz_inv, self.ln_det_Qz = (
             self.state_density.Lambda[0],
@@ -799,7 +891,7 @@ class LSEMStateModel(LinearStateModel):
         model.b = params["b"]
         model.W = params["W"]
         model.Lz = params["Lz"]
-        model.Qz = jnp.dot(model.Lz, model.Lz.T)
+        model.Qz = model.cholvec_to_mat(model.Lz, model.Dz)
         model.update_state_density()
         return model
 
@@ -841,32 +933,38 @@ class LRBFMStateModel(LSEMStateModel):
         Dk: int,
         noise_z: float = 1.0,
         kernel_type: bool = "isotropic",
+        key=random.PRNGKey(42),
     ):
         self.Dz, self.Dk = Dz, Dk
         self.Dphi = self.Dk + self.Dz
         self.Qz = noise_z**2 * jnp.eye(self.Dz)
-        self.Lz = jnp.linalg.cholesky(self.Qz)
-        self.A = jnp.array(np.random.randn(self.Dz, self.Dphi))
+        self.Lz = self.from_mat_to_cholvec(self.Qz)
+        key, subkey = random.split(key)
+        self.A = random.normal(subkey, (self.Dz, self.Dphi))
         self.A = self.A.at[:, : self.Dz].set(jnp.eye(self.Dz))
         self.b = jnp.zeros((self.Dz,))
-        self.mu = jnp.array(np.random.randn(self.Dk, self.Dz))
+        key, subkey = random.split(key)
+        self.mu = random.normal(subkey, (self.Dk, self.Dz))
         self.kernel_type = kernel_type
+        key, subkey = random.split(key)
         if self.kernel_type == "scalar":
-            self.log_length_scale = jnp.array(
-                np.random.randn(
+            self.log_length_scale = random.normal(
+                subkey,
+                (
                     1,
                     1,
-                )
+                ),
             )
         elif self.kernel_type == "isotropic":
-            self.log_length_scale = jnp.array(
-                np.random.randn(
+            self.log_length_scale = random.normal(
+                subkey,
+                (
                     self.Dk,
                     1,
-                )
+                ),
             )
         elif self.kernel_type == "anisotropic":
-            self.log_length_scale = jnp.array(np.random.randn(self.Dk, self.Dz))
+            self.log_length_scale = random.normal(subkey, (self.Dk, self.Dz))
         else:
             raise NotImplementedError("Kernel type not implemented.")
 
@@ -981,6 +1079,6 @@ class LRBFMStateModel(LSEMStateModel):
         model.mu = params["mu"]
         model.log_length_scale = params["log_length_scale"]
         model.Lz = params["Lz"]
-        model.Qz = jnp.dot(model.Lz, model.Lz.T)
+        model.Qz = model.cholvec_to_mat(model.Lz, model.Dz)
         model.update_state_density()
         return model
