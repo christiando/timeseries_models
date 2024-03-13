@@ -235,17 +235,17 @@ class StateSpaceModel:
             _, result = lax.scan(prediction_step, init, (X, jnp.arange(0, T)))
         else:
             filter_dict = self._forward_sweep(
-                X[:first_prediction_idx-1],
+                X[:first_prediction_idx],
                 mu0,
                 Sigma0,
-                control_x[:first_prediction_idx-1],
-                control_z[:first_prediction_idx-1],
+                control_x[:first_prediction_idx],
+                control_z[:first_prediction_idx],
             )
             last_filter_density = pdf.GaussianPDF(Sigma=filter_dict["Sigma"][-1:], 
                                                   mu=filter_dict["mu"][-1:], 
                                                   Lambda=filter_dict["Lambda"][-1:], 
                                                   ln_det_Sigma=filter_dict["ln_det_Sigma"][-1:])
-            p0_pred = self.sm.prediction(last_filter_density, u=control_z[first_prediction_idx-1])
+            p0_pred = self.sm.prediction(last_filter_density, u=control_z[first_prediction_idx])
             #p0_pred = pdf.GaussianPDF(
             #    Sigma=filter_dict["Sigma"][:],
             #    mu=filter_dict["mu"][:],
@@ -256,8 +256,8 @@ class StateSpaceModel:
             prediction_step = lambda cp, vars_t: self._prediction_step(
                 cp,
                 vars_t,
-                control_x[first_prediction_idx-1:],
-                control_z[first_prediction_idx-1:],
+                control_x[first_prediction_idx:],
+                control_z[first_prediction_idx:],
                 observed_dims,
                 horizon,
             )
