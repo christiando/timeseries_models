@@ -75,15 +75,15 @@ class StateSpaceModel:
         if X.ndim == 2:
             X = X[None]
         if control_x == None:
-            control_x = jnp.empty((X.shape[0], X.shape[1] + horizon, 0))
+            control_x = jnp.empty((X.shape[0], X.shape[1] + horizon - 1, 0))
         elif control_x.ndim == 2:
             control_x = control_x[None]
         if control_z == None:
-            control_z = jnp.empty((X.shape[0], X.shape[1] + horizon, 0))
+            control_z = jnp.empty((X.shape[0], X.shape[1] + horizon - 1, 0))
         elif control_z.ndim == 2:
             control_z = control_x[None]
-        assert control_x.shape[1] == (X.shape[1] + horizon)
-        assert control_z.shape[1] == (X.shape[1] + horizon)
+        assert control_x.shape[1] == (X.shape[1] + horizon - 1)
+        assert control_z.shape[1] == (X.shape[1] + horizon - 1)
         if mu0 == None:
             mu0 = jnp.zeros((X.shape[0], 1, self.sm.Dz))
         if Sigma0 == None:
@@ -115,8 +115,8 @@ class StateSpaceModel:
         )
         converged = False
         iteration = 0
-        Q_list = []
-        Q_func_old = -jnp.inf
+        llk_list = []
+        llk_old = -jnp.inf
         while iteration < max_iter and not converged:
             time_start_total = time.perf_counter()
             smooth_dict, two_step_smooth_dict = self.estep(
@@ -132,24 +132,24 @@ class StateSpaceModel:
             )
             mtime = time.perf_counter() - time_start
             time_start = time.perf_counter()
-            Q_func = self.compute_predictive_log_likelihood(X, mu0, Sigma0, control_x, control_z)
+            llk = self.compute_predictive_log_likelihood(X, mu0, Sigma0, control_x, control_z)
             # self.compute_Q_function(
             #     X, smooth_dict, two_step_smooth_dict, mu0, Sigma0, control_x, control_z
             # )
-            Q_time = time.perf_counter() - time_start
-            Q_list.append(Q_func)
+            llk_time = time.perf_counter() - time_start
+            llk_list.append(llk)
             if iteration > 2:
-                converged = self._check_convergence(Q_list[-2], Q_func, conv_crit)
+                converged = self._check_convergence(llk_list[-2], llk, conv_crit)
             iteration += 1
-            Q_func_old = Q_func
+            llk_old = llk
             if iteration % 1 == 0:
-                print("Iteration %d - Log likelihood=%.1f" % (iteration, Q_func_old))
+                print("Iteration %d - Log likelihood=%.1f" % (iteration, llk_old))
             tot_time = time.perf_counter() - time_start_total
             if timeit:
                 print(
                     "###################### \n"
                     + "E-step: Run Time %.1f \n" % etime
-                    + "LLK-func: Run Time %.1f \n" % Q_time
+                    + "LLK-func: Run Time %.1f \n" % llk_time
                     + "M-step: Run Time %.1f \n" % mtime
                     + "Total: Run Time %.1f \n" % tot_time
                     + "###################### \n"
@@ -159,7 +159,7 @@ class StateSpaceModel:
         else:
             print("EM did converge.")
         p0_dict = {"Sigma": Sigma0, "mu": mu0}
-        return Q_list, p0_dict, smooth_dict, two_step_smooth_dict
+        return llk_list, p0_dict, smooth_dict, two_step_smooth_dict
 
     def predict(
         self,
@@ -264,7 +264,7 @@ class StateSpaceModel:
             _, result = lax.scan(
                 prediction_step,
                 init,
-                (X[first_prediction_idx-1:], jnp.arange(0, T - first_prediction_idx - 1)),
+                (X[first_prediction_idx:], jnp.arange(0, T - first_prediction_idx)),
             )
         data_prediction_dict = {
             "Sigma": result[0],
@@ -412,7 +412,7 @@ class StateSpaceModel:
         #init = pz0
         forward_step = lambda cf, vars_t: self._forward_step(cf, vars_t)
         _, result = lax.scan(
-            forward_step, init_density, (X[1:], control_x[1:-1, None], control_z[1:-1, None])
+            forward_step, init_density, (X[1:], control_x[1:, None], control_z[:-1, None])
         )
         (
             Sigma_filter,
@@ -472,7 +472,7 @@ class StateSpaceModel:
             cs, vars_t
         )
         t_range = jnp.arange(0, X.shape[0]-1)
-        _, result = lax.scan(backward_step, cs_init, (t_range, control_z[1:-1, None], filter_density.mu[:-1,None], 
+        _, result = lax.scan(backward_step, cs_init, (t_range, control_z[:-1, None], filter_density.mu[:-1,None], 
                                                       filter_density.Sigma[:-1,None], filter_density.Lambda[:-1,None], filter_density.ln_det_Sigma[:-1,None]), reverse=True)
         (
             Sigma_smooth,
