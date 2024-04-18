@@ -6,7 +6,7 @@ from timeseries_models.hidden_markov_models import observation_model, state_mode
 import pickle
 import os
 import time
-from typing import Union, Tuple, List
+from typing import Tuple
 
 ##################################################################################################
 # This file is part of the Gaussian Toolbox,                                                     #
@@ -16,16 +16,6 @@ from typing import Union, Tuple, List
 #                                                                                                #
 # Author: Christian Donner                                                                       #
 ##################################################################################################
-
-__author__ = "Christian Donner"
-from jax import numpy as jnp
-from jax import jit, lax
-
-from gaussian_toolbox import pdf
-import pickle
-import os
-import time
-from typing import Union, Tuple
 
 
 class HiddenMarkovModel:
