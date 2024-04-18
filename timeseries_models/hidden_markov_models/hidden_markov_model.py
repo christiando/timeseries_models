@@ -256,7 +256,7 @@ class HiddenMarkovModel:
         #init = pz0
         forward_step = lambda cf, vars_t: self._forward_step(cf, vars_t)
         _, result = lax.scan(
-            forward_step, init_density, (ln_pX[1:], control_z[:-1, None])
+            forward_step, init_density, (ln_pX[1:], control_z[:len(ln_pX)-1, None])
         )
         fwd_message, ln_margin_llk = result
         fwd_message = jnp.vstack((init_density, fwd_message[:,0]))
@@ -299,6 +299,6 @@ class HiddenMarkovModel:
             cs, vars_t
         )
         t_range = jnp.arange(0, ln_pX.shape[0])
-        _, bwd_message = lax.scan(backward_step, cs_init, (t_range, control_z[:, None], ln_pX[:],), reverse=True)
+        _, bwd_message = lax.scan(backward_step, cs_init, (t_range, control_z[:len(ln_pX), None], ln_pX[:],), reverse=True)
         bwd_messages = jnp.vstack((bwd_message, last_bwd_message[None]))
         return bwd_message

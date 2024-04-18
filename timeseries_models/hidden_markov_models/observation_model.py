@@ -16,6 +16,7 @@ from gaussian_toolbox import (
 from gaussian_toolbox.utils.jax_minimize_wrapper import minimize
 from jax import random
 from abc import abstractmethod
+from functools import partial
 
 class ObservationModel:
     def __init__(self):
@@ -107,7 +108,7 @@ class ObservationModel:
         M = L.at[jnp.tril_indices_from(L)].set(vec)
         return M @ M.T
 
-class GaussianObservationModel(ObservationModel):
+class GaussianModel(ObservationModel):
     def __init__(self, Dx: int, Dz: int, noise_x: float = 1., key: random.PRNGKey = None):
         self.Dx, self.Dz = Dx, Dz
         self.noise_x = noise_x
@@ -154,7 +155,7 @@ class ARGaussianModel(ObservationModel):
         self.M = jnp.tile(M[None], (Dz, 1, 1))
         if key is None:
             key = random.PRNGKey(0)
-        self.b = random.normal(key, (Dz, Dx * self.lags))
+        self.b = random.normal(key, (Dz, Dx))
         self.Sigma = jnp.tile(jnp.eye(Dx)[None] * noise_x, (Dz, 1, 1))
         self.observation_density = conditional.ConditionalGaussianPDF(M=self.M, b=self.b, Sigma=self.Sigma)
         
@@ -164,20 +165,31 @@ class ARGaussianModel(ObservationModel):
         for i in range(self.lags):
             X_lagged.append(X[i:T - self.lags + i][:, None])
         X_lagged = jnp.concatenate(X_lagged, axis=1)[:,::-1]
-        X_lagged = X_lagged.reshape((T - self.lags + 1, self.lags * self.Dx))
+        X_lagged = X_lagged.reshape((T - self.lags, self.lags * self.Dx))
         return X_lagged
     
-    @vmap
+    @partial(vmap, in_axes=(None, 0, 0))
     def _condition_and_eval(self, X_lagged: jnp.ndarray, X: jnp.ndarray) -> jnp.ndarray:
-        return self.observation_density(X_lagged[:,None]).evaluate_ln(X[:,None])[:,0]
+        return self.observation_density(X_lagged[None]).evaluate_ln(X[None])[:,0]
     
     def get_log_likelihoods(self, X: pdf.Array, **kwargs) -> jnp.ndarray:
         X_lagged = self._create_lagged_data(X)
-        return self._condition_and_eval(X_lagged, X)
+        return self._condition_and_eval(X_lagged, X[self.lags:])
     
     def update_hyperparameters(self, X: jnp.ndarray, pi_marg: dict, **kwargs):
-        X_lagged = self._create_lagged_data(X)
-        
+        pi = pi_marg['pi']
+        sum_pi = jnp.sum(jnp.sum(pi, axis=0), axis=0)
+        X_lagged = vmap(self._create_lagged_data)(X)
+        mu_t = jnp.swapaxes(vmap(self.observation_density.get_conditional_mu)(X_lagged), 1, 2)
+        dX_mu = X[:, self.lags:, None,:] - mu_t
+        self.Sigma = jnp.einsum('abcd, abce -> cde', dX_mu, dX_mu * pi[:,:,:,None]) / sum_pi[:,None, None]
+        self.L = self.mat_to_cholvec(self.Sigma)
+        dX_FX = jnp.einsum('abcd, abc -> cd', X[:, self.lags:,None] - jnp.einsum('abc, dec -> abde', X_lagged, self.M), pi)
+        self.b = dX_FX / sum_pi[:,None]
+        dX_b_vec = jnp.einsum('abcd, abce -> ced', X[:, self.lags:, None] - self.b[None, None], X_lagged[:,:,None] * pi[...,None] )
+        xx_lagged = jnp.einsum('abc, abde -> dce', X_lagged, X_lagged[:,:,None] * pi[...,None])
+        self.M = jnp.swapaxes(vmap(jnp.linalg.solve)(xx_lagged, dX_b_vec), -1, -2)
+        self.observation_density = conditional.ConditionalGaussianPDF(M=self.M, b=self.b, Sigma=self.Sigma)
     
     def get_params(self) -> dict:
         return {'M': self.M, 'b': self.b, 'L': self.L}
