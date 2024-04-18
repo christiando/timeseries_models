@@ -2,8 +2,7 @@ __author__ = "Christian Donner"
 from jax import numpy as jnp
 from jax import scipy as jsc
 from jax import jit, lax, vmap
-from timeseries_models import observation_model, state_model
-from gaussian_toolbox import pdf
+from timeseries_models.hidden_markov_models import observation_model, state_model
 import pickle
 import os
 import time
@@ -302,3 +301,69 @@ class HiddenMarkovModel:
         _, bwd_message = lax.scan(backward_step, cs_init, (t_range, control_z[:len(ln_pX), None], ln_pX[:],), reverse=True)
         bwd_messages = jnp.vstack((bwd_message, last_bwd_message[None]))
         return bwd_message
+    
+    def get_params(self):
+        """Get the parameters of the model.
+
+        :return: Parameters of the model.
+        :rtype: dict
+        """
+        return {"sm_params": self.sm.get_params(), "om_params": self.om.get_params()}
+
+    def set_params(self, params: dict):
+        self.om = self.om.from_dict(params["om_params"])
+        self.sm = self.sm.from_dict(params["sm_params"])
+
+    def save(self, model_name: str, path: str = "", overwrite: bool = False):
+        """Save the model.
+
+        :param model_name: Name of the model, which is used as file name.
+        :type model_name: str
+        :param path:  Path to which model is saved to, defaults to ""
+        :type path: str, optional
+        :param overwrite: Overwrite existing file, defaults to False
+        :type overwrite: bool, optional
+        :raises RuntimeError: If file exists and overwrite is False.
+        """
+        if os.path.isfile(path) and not overwrite:
+            raise RuntimeError(
+                "File already exists. Pick another name or indicate overwrite."
+            )
+        else:
+            params = self.get_params()
+            model_dict = params | {
+                "sm_class": self.sm.__class__.__name__,
+                "om_class": self.om.__class__.__name__,
+            }
+            pickle.dump(model_dict, open(f"{path}/{model_name}.p", "wb"))
+
+    @classmethod
+    def load(cls, model_name: str, path: str = ""):
+        """Load the model.
+
+        :param model_name: Name of the model, which is used as file name.
+        :type model_name: str
+        :param path:  Path to which model is saved to, defaults to ""
+        :type path: str, optional
+        """
+        model_dict = pickle.load(open("%s/%s.p" % (path, model_name), "rb"))
+        state_model_dict = {
+            "StationaryTransitionModel": state_model.StationaryTransitionModel,
+        }
+        observation_model_dict = {
+            "GaussianModel": observation_model.GaussianModel,
+            "ARGaussianModel": observation_model.ARGaussianModel,
+        }
+        try:
+            sm = state_model_dict[model_dict["sm_class"]].from_dict(
+                model_dict["sm_params"]
+            )
+            om = observation_model_dict[model_dict["om_class"]].from_dict(
+                model_dict["om_params"]
+            )
+            return cls(observation_model=om, state_model=sm)
+        except KeyError:
+            print(
+                "Observation and/or state model not found. Please construct manually."
+            )
+            return model_dict
