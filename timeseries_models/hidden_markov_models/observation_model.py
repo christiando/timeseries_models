@@ -63,6 +63,17 @@ class ObservationModel:
         raise NotImplementedError(
             "Log likelihood not implemented for observation model."
         )
+        
+    def get_data_density(self, pi: jnp.ndarray, **kwargs) -> pdf.GaussianPDF:
+        """Get the density of the data.
+
+        :param pi: Mass function over states.
+        :type pi: jnp.ndarray [T, Dz]
+        
+        :return: Density of the data.
+        :rtype: pdf.GaussianPDF
+        """
+        raise NotImplementedError("Must be implemented.")
 
     @staticmethod
     def _reduce_batch_dims(arrs):
@@ -114,7 +125,7 @@ class GaussianModel(ObservationModel):
         self.noise_x = noise_x
         if key is None:
             key = random.PRNGKey(0)
-        self.mu = jnp.zeros((Dz, Dx)) + 1e-4 * random.normal(key, (Dz, Dx))
+        self.mu = jnp.zeros((Dz, Dx)) + 1e-2 * random.normal(key, (Dz, Dx))
         self.Sigma = jnp.tile(jnp.eye(Dx)[None] * noise_x, (Dz, 1, 1))
         self.L = self.mat_to_cholvec(self.Sigma)
         self.observation_density = pdf.GaussianPDF(mu=self.mu, Sigma=self.Sigma)
@@ -131,6 +142,35 @@ class GaussianModel(ObservationModel):
         self.mu = jnp.einsum('abc, abd -> cd', pi, X) / sum_pi[:,None]
         self.L = self.mat_to_cholvec(self.Sigma)
         self.observation_density = pdf.GaussianPDF(mu=self.mu, Sigma=self.Sigma)
+    
+    def partial_filter_step(self, densities: dict, data: dict, observed_dims: jnp.ndarray=None, unobserved_dims: jnp.ndarray=None, **kwargs) -> jnp.ndarray:
+        pi = densities['pi']
+        if observed_dims is not None:
+            X = data['X']
+            pX = self.observation_density.get_marginal(observed_dims)
+            ln_pX = pX.evaluate_ln(X[..., observed_dims])
+            ln_pi_filtered = jnp.log(pi) + ln_pX.T
+            pi_filtered = jnp.exp(ln_pi_filtered - jsc.special.logsumexp(ln_pi_filtered, axis=-1, keepdims=True))
+        else:
+            pi_filtered = pi
+        densities = {'pi': pi_filtered}
+        return densities
+    
+    def setup_data_for_prediction(self, X: jnp.ndarray, control_x: jnp.ndarray=None, control_z: jnp.ndarray=None, **kwargs) -> dict:
+        return {'X': X[:,None]}
+    
+    def get_data_density(self, densities: dict, data: dict, observed_dims: jnp.ndarray=None, unobserved_dims: jnp.ndarray=None, **kwargs) -> pdf.GaussianPDF:
+        X = data['X']
+        pi = densities['pi']
+        if observed_dims is not None:
+            pX_u_given_o = self.observation_density.condition_on_explicit(observed_dims, unobserved_dims)(X[..., observed_dims])
+        else:
+            pX_u_given_o = self.observation_density
+        #print(pi.shape, pX_u_given_o.mu.shape)
+        mu = jnp.einsum('ab, bc -> ac', pi, pX_u_given_o.mu)
+        Sigma = jnp.einsum('ab, bcd -> acd' , pi, pX_u_given_o.integrate("xx'")) - jnp.einsum('ab, ac -> abc', mu, mu)
+        return pdf.GaussianPDF(mu=mu, Sigma=Sigma)
+        
         
     def get_params(self) -> dict:
         params = {'mu': self.mu, 'L': self.L}
@@ -167,10 +207,66 @@ class ARGaussianModel(ObservationModel):
         X_lagged = jnp.concatenate(X_lagged, axis=1)[:,::-1]
         X_lagged = X_lagged.reshape((T - self.lags, self.lags * self.Dx))
         return X_lagged
+
+    def get_lagged_dims(self, dims: jnp.ndarray):
+        lagged_dims = []
+        for i in range(self.lags):
+            lagged_dims.append(dims + i * self.Dx)
+        return jnp.concatenate(lagged_dims)
     
     @partial(vmap, in_axes=(None, 0, 0))
     def _condition_and_eval(self, X_lagged: jnp.ndarray, X: jnp.ndarray) -> jnp.ndarray:
         return self.observation_density(X_lagged[None]).evaluate_ln(X[None])[:,0]
+    
+    def partial_filter_step(self, densities: dict, data: dict,
+                            observed_dims: jnp.ndarray=None, unobserved_dims: jnp.ndarray=None, **kwargs) -> jnp.ndarray:
+        pi, p_X_lagged = densities['pi'], densities['p_X_lagged']
+        if observed_dims is not None:
+            X, X_lagged = data['X'], data['X_lagged']
+            lagged_observed_dims = self.get_lagged_dims(observed_dims)
+            lagged_unobserved_dims = self.get_lagged_dims(unobserved_dims)
+            M_new = self.observation_density.M[..., lagged_unobserved_dims]
+            b_new = self.observation_density.b + jnp.einsum('abc, c -> ab', self.observation_density.M[..., lagged_observed_dims], X_lagged[..., lagged_observed_dims])
+            new_observation_density = conditional.ConditionalGaussianPDF(M=M_new, b=b_new, 
+                                                                         Sigma=self.observation_density.Sigma, 
+                                                                         L=self.observation_density.L, 
+                                                                         ln_det_Sigma=self.observation_density.ln_det_Sigma)
+            pX = new_observation_density.affine_marginal_transformation(p_X_lagged)
+            pX_observed = pX.get_marginal(observed_dims)
+            ln_pX = pX_observed.evaluate_ln(X[..., observed_dims]) 
+            # pX = self.observation_density.get_marginal(observed_dims)
+            ln_pX = pX.evaluate_ln(X[..., observed_dims])
+            ln_pi_filtered = jnp.log(pi) + ln_pX
+            pi_filtered = jnp.exp(ln_pi_filtered - jsc.special.logsumexp(ln_pi_filtered, axis=-1, keepdims=True))
+            pX_X_lagged = new_observation_density.affine_joint_transformation(p_X_lagged)
+            pX_X_lagged_observed = pX_X_lagged.condition_on(observed_dims)(X[..., observed_dims])
+            pX_X_lagged_new = pX_X_lagged_observed.get_marginal(jnp.arange(p_X_lagged.Dx))
+        else:
+            pi_filtered = pi
+            pX_X_lagged = new_observation_density.affine_joint_transformation(p_X_lagged)
+            pX_X_lagged_new = pX_X_lagged.get_marginal(jnp.arange(p_X_lagged.Dx))
+            
+        mu = jnp.einsum('ab, bc -> ac', pi_filtered, pX_X_lagged_new.mu)
+        Sigma = jnp.einsum('ab, bcd -> acd' , pi_filtered, pX_X_lagged_new.integrate("xx'")) - jnp.einsum('ab, ac -> abc', mu, mu)
+        px_lagged_gauss = pdf.GaussianPDF(mu=mu, Sigma=Sigma)
+        densities = {'pi': pi_filtered, 'p_X_lagged': px_lagged_gauss}
+            
+        return pi_filtered
+    
+    def get_data_density(self, pi: jnp.ndarray, X: jnp.ndarray, observed_dims: jnp.ndarray=None, **kwargs) -> pdf.GaussianPDF:
+        if observed_dims is not None:
+            pX_u_given_o = self.observation_density.condition_on(observed_dims)(X[..., observed_dims])
+        else:
+            pX_u_given_o = self.observation_density
+        mu = jnp.einsum('ab, bc -> ac', pi, pX_u_given_o.mu)
+        Sigma = jnp.einsum('ab, bcd -> acd' , pi, pX_u_given_o.integrate("xx'")) - jnp.einsum('ab, ac -> abc', mu, mu)
+        return pdf.GaussianPDF(mu=mu, Sigma=Sigma)
+        
+    
+    def partial_filter_step(self, X: jnp.ndarray, observed_dims: jnp.ndarray, past_info: dict, **kwargs) -> pdf.GaussianPDF:
+        gaussian_observation_density = self._get_gaussian_observation_density(past_info)
+        return gaussian_observation_density.condition_on(observed_dims)(X[..., observed_dims])
+        
     
     def get_log_likelihoods(self, X: pdf.Array, **kwargs) -> jnp.ndarray:
         X_lagged = self._create_lagged_data(X)
@@ -190,6 +286,12 @@ class ARGaussianModel(ObservationModel):
         xx_lagged = jnp.einsum('abc, abde -> dce', X_lagged, X_lagged[:,:,None] * pi[...,None])
         self.M = jnp.swapaxes(vmap(jnp.linalg.solve)(xx_lagged, dX_b_vec), -1, -2)
         self.observation_density = conditional.ConditionalGaussianPDF(M=self.M, b=self.b, Sigma=self.Sigma)
+        
+    def get_data_density(self, pi: jnp.ndarray, p_past: pdf.GaussianPDF, **kwargs) -> pdf.GaussianPDF:
+        observation_density = self.observation_density.affine_marginal_transformation(p_past)
+        mu = jnp.einsum('ab, bc -> ac', pi, observation_density.mu)
+        Sigma = jnp.einsum('ab, bcd -> acd' , pi, observation_density.integrate("xx'")) - jnp.einsum('ab, ac -> abc', mu, mu)
+        return pdf.GaussianPDF(mu=mu, Sigma=Sigma)
     
     def get_params(self) -> dict:
         return {'M': self.M, 'b': self.b, 'L': self.L}
