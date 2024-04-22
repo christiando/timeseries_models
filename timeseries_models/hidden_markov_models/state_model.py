@@ -122,7 +122,7 @@ class StationaryTransitionModel(StateModel):
         return jnp.dot(post_pi, self.transition_matrix)
     
     def update_hyperparameters(self, pi_marg: dict, pi_two_step: dict, **kwargs):
-        transmat = jnp.sum(jnp.sum(pi_two_step['pi'], axis=0), axis=0) + 1e-8
+        transmat = jnp.sum(jnp.sum(pi_two_step['pi'], axis=0), axis=0).T
         transmat /= jnp.sum(transmat, axis=0)[None]
         self.transition_matrix = transmat
         
