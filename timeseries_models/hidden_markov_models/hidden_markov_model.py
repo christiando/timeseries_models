@@ -299,6 +299,100 @@ class HiddenMarkovModel:
         :rtype: dict
         """
         return {"sm_params": self.sm.get_params(), "om_params": self.om.get_params()}
+    
+    def predict(
+        self,
+        X: jnp.ndarray,
+        pi0: jnp.ndarray = None,
+        control_x: jnp.ndarray = None,
+        control_z: jnp.ndarray = None,
+        horizon: int = 1,
+        observed_dims: jnp.ndarray = None,
+        first_prediction_idx: int = 0,
+        return_as_dict: bool = False,
+    ):
+        X, pi0, control_x, control_z = self._init(
+            X, pi0, control_x=control_x, control_z=control_z
+        )
+        predict_func = jit(
+            vmap(
+                lambda X, pi0, control_x, control_z: self._predict(
+                    X,
+                    pi0,
+                    control_x,
+                    control_z,
+                    horizon,
+                    observed_dims,
+                    first_prediction_idx,
+                )
+            )
+        )
+        data_predict_dict = predict_func(X, pi0, control_x, control_z)
+        return data_predict_dict
+    
+    def _predict(
+        self,
+        X: jnp.ndarray,
+        pi0: jnp.ndarray,
+        control_x: jnp.ndarray,
+        control_z: jnp.ndarray,
+        horizon: int,
+        observed_dims: jnp.ndarray,
+        first_prediction_idx: int,
+    ):
+        T = X.shape[0]
+        if first_prediction_idx == 0:
+            init = pi0
+            prediction_step = lambda cp, vars_t: self._prediction_step(
+                cp, vars_t, control_x, control_z, observed_dims, horizon
+            )
+            _, result = lax.scan(prediction_step, init, (X, jnp.arange(0, T)))
+            
+    def _prediction_step(
+        self, carry, vars_t, control_x, control_z, observed_dims, horizon
+    ):
+        X_t, t = vars_t
+        roll_out_step = lambda cp, vars_t: self._roll_out_horizon(
+            cp, vars_t, control_z, t
+        )
+        cur_prediction_density = carry
+        cur_filter_density = self.om.partially_observed_filtering(
+            cur_prediction_density, X_t[None], observed_dims, u=control_x[t]
+        )
+        next_prediction_density = self.sm.prediction(cur_filter_density, u=control_z[t])   
+        if horizon > 1:
+            _, result = lax.scan(roll_out_step, carry, jnp.arange(horizon-1))
+            (
+                horizon_prediction_density,
+            ) = result
+        else:
+            horizon_prediction_density = cur_prediction_density
+
+        carry = next_prediction_density
+        
+        horizon_data_density = self.om.get_data_density(
+            horizon_prediction_density, u=control_x[t + horizon - 1]
+        )
+        result = (
+            horizon_data_density.Sigma[0],
+            horizon_data_density.mu[0],
+            horizon_data_density.Lambda[0],
+            horizon_data_density.ln_det_Sigma[0],
+        )
+        return carry, result
+    
+    def _roll_out_horizon(self, carry, vars_t, control_z, t):
+        t_horizon = vars_t
+        pre_prediction_density = carry
+        cur_prediction_density = self.sm.prediction(
+            pre_prediction_density, u=control_z[t + t_horizon][None]
+        )
+        carry = cur_prediction_density
+        result = (
+            cur_prediction_density,
+        )
+        return carry, result
+    
 
     def set_params(self, params: dict):
         self.om = self.om.from_dict(params["om_params"])
