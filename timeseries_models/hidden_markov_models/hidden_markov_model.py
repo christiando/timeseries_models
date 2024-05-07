@@ -1,7 +1,7 @@
 __author__ = "Christian Donner"
 from jax import numpy as jnp
 from jax import scipy as jsc
-from jax import jit, lax, vmap
+from jax import jit, lax, vmap, random
 from timeseries_models.hidden_markov_models import observation_model, state_model
 import pickle
 import os
@@ -289,7 +289,6 @@ class HiddenMarkovModel:
         )
         t_range = jnp.arange(0, ln_pX.shape[0])
         _, bwd_message = lax.scan(backward_step, cs_init, (t_range, control_z[:len(ln_pX), None], ln_pX[:],), reverse=True)
-        bwd_messages = jnp.vstack((bwd_message, last_bwd_message[None]))
         return bwd_message
     
     def get_params(self):
@@ -300,6 +299,62 @@ class HiddenMarkovModel:
         """
         return {"sm_params": self.sm.get_params(), "om_params": self.om.get_params()}
     
+    def horizon_step(self, carry, t):
+        key, pi, horizon_om = carry
+        # sample the next state
+        key, subkey = random.split(key)
+        z = random.categorical(subkey, jnp.log(pi))
+        # for AR we need to update the carried data
+        key, subkey = random.split(key)
+        horizon_om_new = self.om.do_one_horizon_step(horizon_om, z, subkey)
+        # then we predict the next state
+        pi_new = self.sm.prediction(pi)
+        carry_new = (key, pi_new, horizon_om_new)
+        return carry_new, None
+    
+    def rollout_horizon(self, key, carry_om_data: dict, pi, horizon):
+        init_carry = (key, pi, carry_om_data)
+        if horizon == 1:
+            # if horizon is 1, no need to unroll
+            last_sample = init_carry
+        else:
+            # otherwise we unroll the horizon (to the second last time step)
+            last_sample, _ = lax.scan(self.horizon_step, init_carry, jnp.arange(horizon-1))
+        pi, last_om_data = last_sample[1], last_sample[2]
+        # then we get the gaussian approximation of data at the end of the horizon
+        gauss_dict = self.om.get_horizon_density(pi, last_om_data)
+        return {'mu': gauss_dict['mu'][0], 'Sigma': gauss_dict['Sigma'][0], 'pi': pi}
+    
+    def prediction_step(self, carry, data, observed_dims, unobserved_dims, num_samples, horizon):
+        key, pi, carry_om = carry
+        # get the necessary data for rolling forward the horizon (necessary for AR models, otherwise empty)
+        key, subkey = random.split(key)
+        init_horizon = self.om.get_initial_pred(data, carry_om, subkey, observed_dims, unobserved_dims, num_samples)
+        # The horizon is rolled out and returns the last gaussian density over the data
+        pred_data_dict = self.rollout_horizon(key, init_horizon, pi, horizon)
+        # Observed dimensions are used for filtering, and the carried information is updated
+        key, subkey = random.split(key)
+        pi_filter, carry_om_new = self.om.partial_filter_step(data, pi, carry_om, observed_dims, unobserved_dims, subkey)
+        # prediction for the next time step
+        pi_new = self.sm.prediction(pi_filter)
+        carry_new = key, pi_new, carry_om_new
+        return carry_new, pred_data_dict
+
+    def _predict(self, X: jnp.ndarray, pi0: jnp.ndarray, control_x: jnp.ndarray, control_z: jnp.ndarray, horizon: int, 
+                 observed_dims: jnp.ndarray, unobserved_dims: jnp.ndarray, 
+                 first_prediction_idx: int, key: random.PRNGKey, carry_om: dict = None):
+        # Gets data, and lagged data in case of AR model
+        data = self.om.setup_data_for_prediction(X)
+        # Sets up the step func
+        step_func = jit(lambda carry, data: self.prediction_step(carry, data, observed_dims, unobserved_dims, 1000, horizon))
+        # Sets up the initial carry
+        if carry_om is None:
+            carry_om = self.om.setup_for_partial_filtering(data, unobserved_dims)
+        carry_init = (key, pi0, carry_om)
+        # iterate forward and get the prediction density
+        carry, res = lax.scan(step_func, carry_init, data)
+        return res
+    
     def predict(
         self,
         X: jnp.ndarray,
@@ -309,91 +364,32 @@ class HiddenMarkovModel:
         horizon: int = 1,
         observed_dims: jnp.ndarray = None,
         first_prediction_idx: int = 0,
-        return_as_dict: bool = False,
-    ):
+        key: random.PRNGKey = random.PRNGKey(0),
+    ) -> dict:
+        """ Predict future states and data.
+
+        Args:
+            X: Data to predict. Dimensions should be [T, Dx] or [num_batches, T, Dx].
+            pi0: Initial state density. If None, all states are similar. Defaults to None.
+            control_x: TODO. Defaults to None.
+            control_z: TODO. Defaults to None.
+            horizon: How many steps in the future should be predicted. Defaults to 1.
+            observed_dims: What dimensions are observed. Defaults to None.
+            first_prediction_idx: TODO. Defaults to 0.
+            key: Key for generating random numbers (only used for AR models). Defaults to random.PRNGKey(0).
+
+        Returns:
+            dict: Dictionary with the predicted data. 
+            'mu' and 'Sigma' are the mean and covariance of the predicted data. 'pi' is the predicted state density.
+        """
         X, pi0, control_x, control_z = self._init(
-            X, pi0, control_x=control_x, control_z=control_z
+            X, control_x=control_x, control_z=control_z
         )
-        predict_func = jit(
-            vmap(
-                lambda X, pi0, control_x, control_z: self._predict(
-                    X,
-                    pi0,
-                    control_x,
-                    control_z,
-                    horizon,
-                    observed_dims,
-                    first_prediction_idx,
-                )
-            )
-        )
-        data_predict_dict = predict_func(X, pi0, control_x, control_z)
+        unobserved_dims = jnp.where(jnp.isin(jnp.arange(self.om.Dx), observed_dims, invert=True))[0]
+        vmap_predict = vmap(self._predict, in_axes=(0, 0, 0, 0, None, None, None, None, 0))
+        data_predict_dict = vmap_predict(X, pi0, control_x, control_z, horizon, observed_dims, unobserved_dims, first_prediction_idx, random.split(key, X.shape[0]))
         return data_predict_dict
     
-    def _predict(
-        self,
-        X: jnp.ndarray,
-        pi0: jnp.ndarray,
-        control_x: jnp.ndarray,
-        control_z: jnp.ndarray,
-        horizon: int,
-        observed_dims: jnp.ndarray,
-        first_prediction_idx: int,
-    ):
-        T = X.shape[0]
-        if first_prediction_idx == 0:
-            init = pi0
-            prediction_step = lambda cp, vars_t: self._prediction_step(
-                cp, vars_t, control_x, control_z, observed_dims, horizon
-            )
-            _, result = lax.scan(prediction_step, init, (X, jnp.arange(0, T)))
-            
-    def _prediction_step(
-        self, carry, vars_t, control_x, control_z, observed_dims, horizon
-    ):
-        X_t, t = vars_t
-        roll_out_step = lambda cp, vars_t: self._roll_out_horizon(
-            cp, vars_t, control_z, t
-        )
-        cur_prediction_density = carry
-        cur_filter_density = self.om.partially_observed_filtering(
-            cur_prediction_density, X_t[None], observed_dims, u=control_x[t]
-        )
-        next_prediction_density = self.sm.prediction(cur_filter_density, u=control_z[t])   
-        if horizon > 1:
-            _, result = lax.scan(roll_out_step, carry, jnp.arange(horizon-1))
-            (
-                horizon_prediction_density,
-            ) = result
-        else:
-            horizon_prediction_density = cur_prediction_density
-
-        carry = next_prediction_density
-        
-        horizon_data_density = self.om.get_data_density(
-            horizon_prediction_density, u=control_x[t + horizon - 1]
-        )
-        result = (
-            horizon_data_density.Sigma[0],
-            horizon_data_density.mu[0],
-            horizon_data_density.Lambda[0],
-            horizon_data_density.ln_det_Sigma[0],
-        )
-        return carry, result
-    
-    def _roll_out_horizon(self, carry, vars_t, control_z, t):
-        t_horizon = vars_t
-        pre_prediction_density = carry
-        cur_prediction_density = self.sm.prediction(
-            pre_prediction_density, u=control_z[t + t_horizon][None]
-        )
-        carry = cur_prediction_density
-        result = (
-            cur_prediction_density,
-        )
-        return carry, result
-    
-
     def set_params(self, params: dict):
         self.om = self.om.from_dict(params["om_params"])
         self.sm = self.sm.from_dict(params["sm_params"])
