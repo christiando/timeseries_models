@@ -323,7 +323,7 @@ class HiddenMarkovModel:
         pi, last_om_data = last_sample[1], last_sample[2]
         # then we get the gaussian approximation of data at the end of the horizon
         gauss_dict = self.om.get_horizon_density(pi, last_om_data)
-        return {'mu': gauss_dict['mu'][0], 'Sigma': gauss_dict['Sigma'][0], 'pi': pi}
+        return {'mu': gauss_dict['mu'][0], 'Sigma': gauss_dict['Sigma'][0], 'pi_pred': pi[0]}
     
     def prediction_step(self, carry, data, observed_dims, unobserved_dims, num_samples, horizon):
         key, pi, carry_om = carry
@@ -338,7 +338,7 @@ class HiddenMarkovModel:
         # prediction for the next time step
         pi_new = self.sm.prediction(pi_filter)
         carry_new = key, pi_new, carry_om_new
-        return carry_new, pred_data_dict
+        return carry_new, pred_data_dict | {'pi': pi_filter[0]}
 
     def _predict(self, X: jnp.ndarray, pi0: jnp.ndarray, control_x: jnp.ndarray, control_z: jnp.ndarray, horizon: int, 
                  observed_dims: jnp.ndarray, unobserved_dims: jnp.ndarray, 
