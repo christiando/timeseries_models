@@ -385,7 +385,7 @@ class HiddenMarkovModel:
             'mu' and 'Sigma' are the mean and covariance of the predicted data. 'pi' is the predicted state density.
         """
         X, pi0, control_x, control_z = self._init(
-            X, control_x=control_x, control_z=control_z
+            X, pi0, control_x=control_x, control_z=control_z
         )
         if observed_dims is None:
             unobserved_dims = jnp.arange(self.om.Dx)
@@ -395,7 +395,28 @@ class HiddenMarkovModel:
         data_predict_dict = vmap_predict(X, pi0, control_x, control_z, horizon, observed_dims, unobserved_dims, first_prediction_idx, random.split(key, X.shape[0]))
         return data_predict_dict
     
-    def compute_Q_function(X, pi, ):
+    def _compute_Q_function_batch(
+        self, X, pi_marg, pi_two_step, pi0, control_x, control_z
+    ) -> float:
+        # initial part
+        initial_term = jnp.sum(pi_marg['pi'][:1] * jnp.log(jnp.maximum(pi0, 1e-10)))
+        # entropy
+        entropy_two_step = - jnp.sum(pi_two_step['pi'] * jnp.log(jnp.maximum(pi_two_step['pi'], 1e-10)))
+        entropy_marg = - jnp.sum(pi_marg['pi'][1:] * jnp.log(jnp.maximum(pi_marg['pi'][1:], 1e-10)))
+        entropy = entropy_two_step - entropy_marg
+        # sm part
+        sm_term = self.sm.compute_Q_function(pi_marg, pi_two_step, pi0, control_z=control_z)
+        # om part
+        om_term = self.om.compute_Q_function(X, pi_marg, control_x=control_x)
+        # complete Q-function
+        return initial_term + entropy + sm_term + om_term
+    
+    def compute_Q_function(self, X, pi_marg, pi_two_step, pi0, control_x=None, control_z=None) -> float:
+        X, pi0, control_x, control_z = self._init(X, pi0, control_x, control_z)
+        Q_batch = jit(vmap(self._compute_Q_function_batch))(
+            X, pi_marg, pi_two_step, pi0, control_x, control_z
+        )
+        return jnp.sum(Q_batch)
         
     
     def set_params(self, params: dict):

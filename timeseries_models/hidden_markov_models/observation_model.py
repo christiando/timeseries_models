@@ -128,6 +128,10 @@ class ObservationModel:
     def get_horizon_density(self, *args) -> dict:
         return {}
     
+    def compute_Q_function(self, X, pi_marg, **kwargs):
+        ln_pX = self.get_log_likelihoods(X)
+        return jnp.sum(pi_marg['pi'] * ln_pX)
+    
 
 class GaussianModel(ObservationModel):
     def __init__(self, Dx: int, Dz: int, noise_x: float = 1., key: random.PRNGKey = None):

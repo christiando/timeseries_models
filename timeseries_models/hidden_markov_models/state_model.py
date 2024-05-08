@@ -126,6 +126,10 @@ class StationaryTransitionModel(StateModel):
         transmat /= jnp.maximum(jnp.sum(transmat, axis=0)[None], 1e-10)
         self.transition_matrix = transmat
         
+    def compute_Q_function(self, pi_marg, pi_two_step, pi0, **kwargs):
+        # TODO: check if the transpose is correct
+        return jnp.sum(pi_two_step['pi'][:,:] * jnp.log(jnp.maximum(self.transition_matrix.T, 1e-10)))
+
     def get_params(self) -> dict:
         return {'transition_matrix': self.transition_matrix}
     
