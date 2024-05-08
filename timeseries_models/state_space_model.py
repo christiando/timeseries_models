@@ -195,11 +195,12 @@ class StateSpaceModel:
                 )
             )
         )
-        data_predict_dict = predict_func(X, mu0, Sigma0, control_x, control_z)
+        data_predict_dict, latent_predict_dict = predict_func(X, mu0, Sigma0, control_x, control_z)
         if return_as_dict:
-            return data_predict_dict
+            return data_predict_dict, latent_predict_dict
         else:
             data_prediction_densities = []
+            latent_prediction_densities = []
             num_batches = X.shape[0]
             for ibatch in range(num_batches):
                 batch_density = pdf.GaussianPDF(
@@ -209,10 +210,17 @@ class StateSpaceModel:
                     ln_det_Sigma=data_predict_dict["ln_det_Sigma"][ibatch],
                 )
                 data_prediction_densities.append(batch_density)
+                latent_density = pdf.GaussianPDF(
+                    Sigma=latent_predict_dict["Sigma"][ibatch],
+                    mu=latent_predict_dict["mu"][ibatch],
+                    Lambda=latent_predict_dict["Lambda"][ibatch],
+                    ln_det_Sigma=latent_predict_dict["ln_det_Sigma"][ibatch],
+                )
+                latent_prediction_densities.append(latent_density)
             if num_batches == 1:
-                return data_prediction_densities[0]
+                return {'x': data_prediction_densities[0], 'z': latent_prediction_densities[0]}
             else:
-                return data_prediction_densities
+                return {'x': data_prediction_densities, 'z': latent_prediction_densities}
 
     def _predict(
         self,
@@ -272,7 +280,13 @@ class StateSpaceModel:
             "Lambda": result[2],
             "ln_det_Sigma": result[3],
         }
-        return data_prediction_dict
+        latent_prediction_dict = {
+            "Sigma": result[4],
+            "mu": result[5],
+            "Lambda": result[6],
+            "ln_det_Sigma": result[7],
+        }
+        return data_prediction_dict, latent_prediction_dict
 
     def _prediction_step(
         self, carry, vars_t, control_x, control_z, observed_dims, horizon
@@ -313,6 +327,10 @@ class StateSpaceModel:
             horizon_data_density.mu[0],
             horizon_data_density.Lambda[0],
             horizon_data_density.ln_det_Sigma[0],
+            horizon_prediction_density.Sigma[0],
+            horizon_prediction_density.mu[0],
+            horizon_prediction_density.Lambda[0],
+            horizon_prediction_density.ln_det_Sigma[0],
         )
         return carry, result
 

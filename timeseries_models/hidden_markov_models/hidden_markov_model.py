@@ -338,7 +338,9 @@ class HiddenMarkovModel:
         # prediction for the next time step
         pi_new = self.sm.prediction(pi_filter)
         carry_new = key, pi_new, carry_om_new
-        return carry_new, pred_data_dict | {'pi': pi_filter[0]}
+        data_density = {'mu': pred_data_dict['mu'], 'Sigma': pred_data_dict['Sigma']}
+        latent_density = {'pi_pred': pred_data_dict['pi_pred'], 'pi_filter': pi_filter[0]}
+        return carry_new, {'x': data_density, 'z': latent_density}
 
     def _predict(self, X: jnp.ndarray, pi0: jnp.ndarray, control_x: jnp.ndarray, control_z: jnp.ndarray, horizon: int, 
                  observed_dims: jnp.ndarray, unobserved_dims: jnp.ndarray, 
@@ -385,10 +387,16 @@ class HiddenMarkovModel:
         X, pi0, control_x, control_z = self._init(
             X, control_x=control_x, control_z=control_z
         )
-        unobserved_dims = jnp.where(jnp.isin(jnp.arange(self.om.Dx), observed_dims, invert=True))[0]
+        if observed_dims is None:
+            unobserved_dims = jnp.arange(self.om.Dx)
+        else:    
+            unobserved_dims = jnp.where(jnp.isin(jnp.arange(self.om.Dx), observed_dims, invert=True))[0]
         vmap_predict = vmap(self._predict, in_axes=(0, 0, 0, 0, None, None, None, None, 0))
         data_predict_dict = vmap_predict(X, pi0, control_x, control_z, horizon, observed_dims, unobserved_dims, first_prediction_idx, random.split(key, X.shape[0]))
         return data_predict_dict
+    
+    def compute_Q_function(X, pi, ):
+        
     
     def set_params(self, params: dict):
         self.om = self.om.from_dict(params["om_params"])
