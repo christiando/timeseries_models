@@ -344,11 +344,11 @@ class HiddenMarkovModel:
 
     def _predict(self, X: jnp.ndarray, pi0: jnp.ndarray, control_x: jnp.ndarray, control_z: jnp.ndarray, horizon: int, 
                  observed_dims: jnp.ndarray, unobserved_dims: jnp.ndarray, 
-                 first_prediction_idx: int, key: random.PRNGKey, carry_om: dict = None):
+                 first_prediction_idx: int, key: random.PRNGKey, carry_om: dict = None, num_samples: int = 1000):
         # Gets data, and lagged data in case of AR model
         data = self.om.setup_data_for_prediction(X)
         # Sets up the step func
-        step_func = jit(lambda carry, data: self.prediction_step(carry, data, observed_dims, unobserved_dims, 1000, horizon))
+        step_func = jit(lambda carry, data: self.prediction_step(carry, data, observed_dims, unobserved_dims, num_samples, horizon))
         # Sets up the initial carry
         if carry_om is None:
             carry_om = self.om.setup_for_partial_filtering(data, unobserved_dims)
@@ -389,6 +389,8 @@ class HiddenMarkovModel:
         )
         if observed_dims is None:
             unobserved_dims = jnp.arange(self.om.Dx)
+        elif len(observed_dims) == self.om.Dx:
+            unobserved_dims = jnp.array([])
         else:    
             unobserved_dims = jnp.where(jnp.isin(jnp.arange(self.om.Dx), observed_dims, invert=True))[0]
         vmap_predict = vmap(self._predict, in_axes=(0, 0, 0, 0, None, None, None, None, 0))

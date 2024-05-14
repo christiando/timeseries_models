@@ -304,6 +304,8 @@ class ARGaussianModel(ObservationModel):
         return {'x_sample': initial_sample}
     
     def setup_for_partial_filtering(self, data: dict, unobserved_dims: jnp.ndarray, **kwargs):
+        if len(unobserved_dims) == 0:
+            return {'p_unobserved_past': None}
         lagged_unobserved_dims = self.get_lagged_dims(unobserved_dims)
         x0 = data['X_lagged'][0]
         p_unobserved = pdf.GaussianPDF(mu=x0[lagged_unobserved_dims][None], Sigma=jnp.eye(len(lagged_unobserved_dims))[None])
@@ -323,32 +325,41 @@ class ARGaussianModel(ObservationModel):
         X_lagged = data['X_lagged']
         X = data['X']
         p_unobserved_past = carry_om['p_unobserved_past']
+        
+            
         if observed_dims is not None:
-            lagged_observed_dims = self.get_lagged_dims(observed_dims)
-            lagged_unobserved_dims = self.get_lagged_dims(unobserved_dims)
-            initial_sample = jnp.empty((num_samples, X_lagged.shape[-1]))
-            key, subkey = random.split(key)
+            if len(unobserved_dims) == 0:
+                pX_X_past = self.observation_density(X_lagged)
+                ln_pX = pX_X_past.evaluate_ln(X)
+                ln_pi_new = jnp.log(pi_pred) + ln_pX.T
+                pi_new = jnp.exp(ln_pi_new - jsc.special.logsumexp(ln_pi_new, axis=-1, keepdims=True))
+                p_unobserved_new = None
+            else:
+                lagged_observed_dims = self.get_lagged_dims(observed_dims)
+                lagged_unobserved_dims = self.get_lagged_dims(unobserved_dims)
+                #initial_sample = jnp.empty((num_samples, X_lagged.shape[-1]))
+                key, subkey = random.split(key)
 
-            initial_sample = initial_sample.at[:,lagged_unobserved_dims].set(p_unobserved_past.sample(subkey, num_samples)[:,0])
-            initial_sample = initial_sample.at[:,lagged_observed_dims].set(X_lagged[lagged_observed_dims])
-            M_new = self.observation_density.M[..., lagged_unobserved_dims]
-            b_new = self.observation_density.b + jnp.einsum('abc, c -> ab', self.observation_density.M[..., lagged_observed_dims], 
-                                                            X_lagged[..., lagged_observed_dims])
-            new_observation_density = conditional.ConditionalGaussianPDF(M=M_new, b=b_new, 
-                                                                            Sigma=self.observation_density.Sigma, 
-                                                                            Lambda=self.observation_density.Lambda, 
-                                                                            ln_det_Sigma=self.observation_density.ln_det_Sigma)
-            pX_X_past_unobserved = new_observation_density.affine_joint_transformation(p_unobserved_past)
-            reorder_dimension = jnp.concatenate([jnp.arange(-self.Dx,0), jnp.arange(len(unobserved_dims)*(self.lags-1))])
-            pX_X_past_unobserved = pX_X_past_unobserved.get_marginal(reorder_dimension)
-            ln_pX = pX_X_past_unobserved.get_marginal(observed_dims).evaluate_ln(X[:,observed_dims])
-            ln_pi_new = jnp.log(pi_pred) + ln_pX.T
-            pi_new = jnp.exp(ln_pi_new - jsc.special.logsumexp(ln_pi_new, axis=-1, keepdims=True))
-            conditional_dim = observed_dims
-            unconditional_dim = jnp.concatenate([unobserved_dims, jnp.arange(self.Dx, self.Dx + len(unobserved_dims) * (self.lags-1))])
-            p_unobserved_past = pX_X_past_unobserved.condition_on_explicit(conditional_dim, unconditional_dim)(X[:,observed_dims])
-            p_gauss = self.get_gauss(pi_new, p_unobserved_past.mu[None], p_unobserved_past.Sigma[None])
-            p_unobserved_new = pdf.GaussianPDF.from_dict(p_gauss)
+                #initial_sample = initial_sample.at[:,lagged_unobserved_dims].set(p_unobserved_past.sample(subkey, num_samples)[:,0])
+                #initial_sample = initial_sample.at[:,lagged_observed_dims].set(X_lagged[lagged_observed_dims])
+                M_new = self.observation_density.M[..., lagged_unobserved_dims]
+                b_new = self.observation_density.b + jnp.einsum('abc, c -> ab', self.observation_density.M[..., lagged_observed_dims], 
+                                                                X_lagged[..., lagged_observed_dims])
+                new_observation_density = conditional.ConditionalGaussianPDF(M=M_new, b=b_new, 
+                                                                                Sigma=self.observation_density.Sigma, 
+                                                                                Lambda=self.observation_density.Lambda, 
+                                                                                ln_det_Sigma=self.observation_density.ln_det_Sigma)
+                pX_X_past_unobserved = new_observation_density.affine_joint_transformation(p_unobserved_past)
+                reorder_dimension = jnp.concatenate([jnp.arange(-self.Dx,0), jnp.arange(len(unobserved_dims)*(self.lags-1))])
+                pX_X_past_unobserved = pX_X_past_unobserved.get_marginal(reorder_dimension)
+                ln_pX = pX_X_past_unobserved.get_marginal(observed_dims).evaluate_ln(X[:,observed_dims])
+                ln_pi_new = jnp.log(pi_pred) + ln_pX.T
+                pi_new = jnp.exp(ln_pi_new - jsc.special.logsumexp(ln_pi_new, axis=-1, keepdims=True))
+                conditional_dim = observed_dims
+                unconditional_dim = jnp.concatenate([unobserved_dims, jnp.arange(self.Dx, self.Dx + len(unobserved_dims) * (self.lags-1))])
+                p_unobserved_past = pX_X_past_unobserved.condition_on_explicit(conditional_dim, unconditional_dim)(X[:,observed_dims])
+                p_gauss = self.get_gauss(pi_new, p_unobserved_past.mu[None], p_unobserved_past.Sigma[None])
+                p_unobserved_new = pdf.GaussianPDF.from_dict(p_gauss)
         else:
             pi_new = pi_pred
             pX_X_past_unobserved = self.observation_density.affine_joint_transformation(p_unobserved_past)
