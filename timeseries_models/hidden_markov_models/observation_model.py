@@ -293,6 +293,8 @@ class ARGaussianModel(ObservationModel):
     
     def get_initial_pred(self, data: dict, carry_om: dict, key: random.PRNGKey, observed_dims: jnp.ndarray, 
                          unobserved_dims: jnp.ndarray, num_samples: int=100, **kwargs):
+        if len(unobserved_dims) == 0:
+            return {'x_sample': jnp.tile(data['X_lagged'][None], (num_samples, 1))}
         X_lagged = data['X_lagged']
         p_unobserved_past = carry_om['p_unobserved_past']
         lagged_observed_dims = self.get_lagged_dims(observed_dims)
@@ -326,10 +328,9 @@ class ARGaussianModel(ObservationModel):
         X = data['X']
         p_unobserved_past = carry_om['p_unobserved_past']
         
-            
         if observed_dims is not None:
             if len(unobserved_dims) == 0:
-                pX_X_past = self.observation_density(X_lagged)
+                pX_X_past = self.observation_density(X_lagged[None])
                 ln_pX = pX_X_past.evaluate_ln(X)
                 ln_pi_new = jnp.log(pi_pred) + ln_pX.T
                 pi_new = jnp.exp(ln_pi_new - jsc.special.logsumexp(ln_pi_new, axis=-1, keepdims=True))
