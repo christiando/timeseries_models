@@ -605,7 +605,11 @@ class StateSpaceModel:
             control_z,
             observed_dims=jnp.arange(X.shape[-1]),
             first_prediction_idx=first_prediction_idx,
+<<<<<<< Updated upstream
         )["x"]
+=======
+        )['x']
+>>>>>>> Stashed changes
         llk = 0
         num_batches = X.shape[0]
         if num_batches == 1:
