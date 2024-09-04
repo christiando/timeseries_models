@@ -655,7 +655,9 @@ class LSEMStateModel(LinearStateModel):
     def _update_A(self, smooth_dict: dict, two_step_smooth_dict: dict):
         stats = jit(vmap(self._get_A_stats))(smooth_dict, two_step_smooth_dict)
         T, Eff, Ezf, Ef = self._reduce_batch_dims(stats)
-        Ebf = (Ef[None] * self.b[:, None]) / T
+        Ebf = (Ef[None] * self.b[:, None])
+        # To prevent numerical issues
+        Eff = Eff.at[self.Dz:,self.Dz:].add(1e-4 * jnp.eye(self.Dk))
         A = jnp.linalg.solve(Eff / T, (Ezf - Ebf).T / T).T
         # b = sd_mu / T - jnp.dot(A, Ef / T).T
         return A
