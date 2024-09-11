@@ -97,7 +97,7 @@ class StateModel:
         raise NotImplementedError("Must be implemented.")
 
     @staticmethod
-    def from_mat_to_cholvec(mat: jnp.ndarray) -> jnp.ndarray:
+    def mat_to_cholvec(mat: jnp.ndarray) -> jnp.ndarray:
         """Converts a lower triangular matrix to a vector.
 
         :param mat: Lower triangular matrix.
@@ -110,7 +110,7 @@ class StateModel:
         return vec
 
     @staticmethod
-    def from_cholvec_to_mat(vec: jnp.ndarray, n_dim: int) -> jnp.ndarray:
+    def cholvec_to_mat(vec: jnp.ndarray, n_dim: int) -> jnp.ndarray:
         """Converts a vectorized lower triangular matrix to a matrix.
 
         :param vec: Vectorized lower triangular matrix.
