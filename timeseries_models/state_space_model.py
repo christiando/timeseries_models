@@ -770,7 +770,6 @@ class StateSpaceModel:
             "LinearObservationModel": observation_model.LinearObservationModel,
             "LSEMObservationModel": observation_model.LSEMObservationModel,
             "LRBFMObservationModel": observation_model.LRBFMObservationModel,
-            "HeteroscedasticObservationModel": observation_model.HeteroscedasticObservationModel,
         }
         try:
             sm = state_model_dict[model_dict["sm_class"]].from_dict(
