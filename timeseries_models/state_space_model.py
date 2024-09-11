@@ -743,12 +743,12 @@ class StateSpaceModel:
                 "File already exists. Pick another name or indicate overwrite."
             )
         else:
-            params = self.get_params()
-            model_dict = params | {
-                "sm_class": self.sm.__class__.__name__,
-                "om_class": self.om.__class__.__name__,
-            }
-            pickle.dump(model_dict, open(f"{path}/{model_name}.p", "wb"))
+            #params = self.get_params()
+            #model_dict = params | {
+            #    "sm_class": self.sm.__class__.__name__,
+            #    "om_class": self.om.__class__.__name__,
+            #}
+            pickle.dump(self, open(f"{path}/{model_name}.p", "wb"))
 
     @classmethod
     def load(cls, model_name: str, path: str = ""):
@@ -759,29 +759,29 @@ class StateSpaceModel:
         :param path:  Path to which model is saved to, defaults to ""
         :type path: str, optional
         """
-        model_dict = pickle.load(open("%s/%s.p" % (path, model_name), "rb"))
-        state_model_dict = {
-            "LinearStateModel": state_model.LinearStateModel,
-            "LSEMStateModel": state_model.LSEMStateModel,
-            "LRBFMStateModel": state_model.LRBFMStateModel,
-            "NNControlStateModel": state_model.NNControlStateModel,
-        }
-        observation_model_dict = {
-            "LinearObservationModel": observation_model.LinearObservationModel,
-            "LSEMObservationModel": observation_model.LSEMObservationModel,
-            "LRBFMObservationModel": observation_model.LRBFMObservationModel,
-            "HeteroscedasticObservationModel": observation_model.HeteroscedasticObservationModel,
-        }
-        try:
-            sm = state_model_dict[model_dict["sm_class"]].from_dict(
-                model_dict["sm_params"]
-            )
-            om = observation_model_dict[model_dict["om_class"]].from_dict(
-                model_dict["om_params"]
-            )
-            return cls(observation_model=om, state_model=sm)
-        except KeyError:
-            print(
-                "Observation and/or state model not found. Please construct manually."
-            )
-            return model_dict
+        model = pickle.load(open("%s/%s.p" % (path, model_name), "rb"))
+        return model
+        # state_model_dict = {
+        #     "LinearStateModel": state_model.LinearStateModel,
+        #     "LSEMStateModel": state_model.LSEMStateModel,
+        #     "LRBFMStateModel": state_model.LRBFMStateModel,
+        #     "NNControlStateModel": state_model.NNControlStateModel,
+        # }
+        # observation_model_dict = {
+        #     "LinearObservationModel": observation_model.LinearObservationModel,
+        #     "LSEMObservationModel": observation_model.LSEMObservationModel,
+        #     "LRBFMObservationModel": observation_model.LRBFMObservationModel,
+        # }
+        # try:
+        #     sm = state_model_dict[model_dict["sm_class"]].from_dict(
+        #         model_dict["sm_params"]
+        #     )
+        #     om = observation_model_dict[model_dict["om_class"]].from_dict(
+        #         model_dict["om_params"]
+        #     )
+        #     return cls(observation_model=om, state_model=sm)
+        # except KeyError:
+        #     print(
+        #         "Observation and/or state model not found. Please construct manually."
+        #     )
+        #     return model_dict

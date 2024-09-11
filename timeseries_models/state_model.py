@@ -97,7 +97,7 @@ class StateModel:
         raise NotImplementedError("Must be implemented.")
 
     @staticmethod
-    def from_mat_to_cholvec(mat: jnp.ndarray) -> jnp.ndarray:
+    def mat_to_cholvec(mat: jnp.ndarray) -> jnp.ndarray:
         """Converts a lower triangular matrix to a vector.
 
         :param mat: Lower triangular matrix.
@@ -110,7 +110,7 @@ class StateModel:
         return vec
 
     @staticmethod
-    def from_cholvec_to_mat(vec: jnp.ndarray, n_dim: int) -> jnp.ndarray:
+    def cholvec_to_mat(vec: jnp.ndarray, n_dim: int) -> jnp.ndarray:
         """Converts a vectorized lower triangular matrix to a matrix.
 
         :param vec: Vectorized lower triangular matrix.
@@ -140,7 +140,7 @@ class LinearStateModel(StateModel):
         """
         self.Dz = Dz
         self.Qz = noise_z**2 * jnp.eye(self.Dz)
-        self.Lz = self.from_mat_to_cholvec(self.Qz)
+        self.Lz = self.mat_to_cholvec(self.Qz)
         self.A, self.b = jnp.eye(self.Dz), jnp.zeros((self.Dz,))
         self.delta = delta
         self.update_state_density()
@@ -250,7 +250,7 @@ class LinearStateModel(StateModel):
         """
         self.A = jit(self._update_A)(smooth_dict, two_step_smooth_dict, **kwargs)
         self.Qz = jit(self._update_Qz)(two_step_smooth_dict, **kwargs)
-        self.Lz = self.from_mat_to_cholvec(self.Qz)
+        self.Lz = self.mat_to_cholvec(self.Qz)
         self.b = jit(self._update_b)(smooth_dict, **kwargs)
         self.update_state_density()
 
@@ -397,7 +397,7 @@ class NNControlStateModel(LinearStateModel):
     ):
         self.Dz = Dz
         self.Qz = noise_z**2 * jnp.eye(self.Dz)
-        self.Lz = self.from_mat_to_cholvec(self.Qz)
+        self.Lz = self.mat_to_cholvec(self.Qz)
         self.Du = Du
         self.control_func_hk = self._setup_control_func(control_func)
         dummy_input = jnp.ones([1, Du])
@@ -446,7 +446,7 @@ class NNControlStateModel(LinearStateModel):
             smooth_dict, two_step_smooth_dict, control_z, **kwargs
         )
         self.Qz = self._update_Qz(two_step_smooth_dict, control_z, **kwargs)
-        self.Lz = self.from_mat_to_cholvec(self.Qz)
+        self.Lz = self.mat_to_cholvec(self.Qz)
         self.update_state_density()
 
     def update_state_density(self):
@@ -621,7 +621,7 @@ class LSEMStateModel(LinearStateModel):
         self.Dz, self.Dk = Dz, Dk
         self.Dphi = self.Dk + self.Dz
         self.Qz = noise_z**2 * jnp.eye(self.Dz)
-        self.Lz = self.from_mat_to_cholvec(self.Qz)
+        self.Lz = self.mat_to_cholvec(self.Qz)
         self.lambda_W = lambda_W
         key, subkey = random.split(key)
         self.A = random.normal(subkey, (self.Dz, self.Dphi))
@@ -646,7 +646,7 @@ class LSEMStateModel(LinearStateModel):
         """
         self.A = jit(self._update_A)(smooth_dict, two_step_smooth_dict)
         self.Qz = jit(self._update_Qz)(smooth_dict, two_step_smooth_dict)
-        self.Lz = self.from_mat_to_cholvec(self.Qz)
+        self.Lz = self.mat_to_cholvec(self.Qz)
         self.b = jit(self._update_b)(smooth_dict)
         self.update_state_density()
         self._update_kernel_params(smooth_dict, two_step_smooth_dict)
@@ -940,7 +940,7 @@ class LRBFMStateModel(LSEMStateModel):
         self.Dz, self.Dk = Dz, Dk
         self.Dphi = self.Dk + self.Dz
         self.Qz = noise_z**2 * jnp.eye(self.Dz)
-        self.Lz = self.from_mat_to_cholvec(self.Qz)
+        self.Lz = self.mat_to_cholvec(self.Qz)
         key, subkey = random.split(key)
         self.A = random.normal(subkey, (self.Dz, self.Dphi))
         self.A = self.A.at[:, : self.Dz].set(jnp.eye(self.Dz))
