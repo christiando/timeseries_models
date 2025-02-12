@@ -630,97 +630,98 @@ class StateSpaceModel:
                 )
         return llk
 
-    def _sample_step(
-        self,
-        z_old: jnp.array,
-        vars_t: Tuple,
-        observed_dims: jnp.ndarray,
-        unobserved_dims: jnp.ndarray,
-    ) -> Union[jnp.ndarray, jnp.ndarray]:
-        """One time step sample for fixed observed data dimensions.
+    # TODO: fix this
+    # def _sample_step(
+    #     self,
+    #     z_old: jnp.array,
+    #     vars_t: Tuple,
+    #     observed_dims: jnp.ndarray,
+    #     unobserved_dims: jnp.ndarray,
+    # ) -> Union[jnp.ndarray, jnp.ndarray]:
+    #     """One time step sample for fixed observed data dimensions.
 
-        :param z_old: Sample of latent variable in previous time step.
-        :type z_old: jnp.ndarray [num_samples, Dz]
-        :param rand_nums_z: Random numbers for sampling latent dimensions.
-        :type rand_nums_z: jnp.ndarray [num_samples, Dz]
-        :param x: Data vector for current time step.
-        :type x: jnp.ndarray [1, Dx]
-        :param rand_nums_x: Random numbers for sampling x.
-        :type rand_nums_x: jnp.ndarray [num_samples, num_unobserved_dims]
-        :param observed_dims: Observed dimensions.
-        :type observed_dims: jnp.ndarray [num_observed_dims]
-        :param unobserved_dims: Unobserved dimensions.
-        :type unobserved_dims: jnp.ndarray [num_unobserved_dims]
-        :return: Latent variable and data sample (only unobserved) for current time step.
-        :rtype: Union[jnp.ndarray, jnp.ndarray] [num_samples, Dz] [num_samples, num_unobserved]
-        """
+    #     :param z_old: Sample of latent variable in previous time step.
+    #     :type z_old: jnp.ndarray [num_samples, Dz]
+    #     :param rand_nums_z: Random numbers for sampling latent dimensions.
+    #     :type rand_nums_z: jnp.ndarray [num_samples, Dz]
+    #     :param x: Data vector for current time step.
+    #     :type x: jnp.ndarray [1, Dx]
+    #     :param rand_nums_x: Random numbers for sampling x.
+    #     :type rand_nums_x: jnp.ndarray [num_samples, num_unobserved_dims]
+    #     :param observed_dims: Observed dimensions.
+    #     :type observed_dims: jnp.ndarray [num_observed_dims]
+    #     :param unobserved_dims: Unobserved dimensions.
+    #     :type unobserved_dims: jnp.ndarray [num_unobserved_dims]
+    #     :return: Latent variable and data sample (only unobserved) for current time step.
+    #     :rtype: Union[jnp.ndarray, jnp.ndarray] [num_samples, Dz] [num_samples, num_unobserved]
+    #     """
 
-        rand_nums_z_t, x_t, rand_nums_x_t, uz_t, ux_t = vars_t
-        p_z = self.sm.condition_on_past(z_old, u=uz_t)
-        L = jnp.linalg.cholesky(p_z.Sigma)
-        z_sample = p_z.mu + jnp.einsum("abc,ac->ab", L, rand_nums_z_t)
-        p_x = self.om.condition_on_z_and_observations(
-            z_sample, x_t, observed_dims, unobserved_dims, ux_t=ux_t
-        )
-        L = jnp.linalg.cholesky(p_x.Sigma)
-        x_sample = p_x.mu + jnp.einsum("abc,ac->ab", L, rand_nums_x_t)
-        result = z_sample, x_sample
-        return z_sample, result
+    #     rand_nums_z_t, x_t, rand_nums_x_t, uz_t, ux_t = vars_t
+    #     p_z = self.sm.condition_on_past(z_old, u=uz_t)
+    #     L = jnp.linalg.cholesky(p_z.Sigma)
+    #     z_sample = p_z.mu + jnp.einsum("abc,ac->ab", L, rand_nums_z_t)
+    #     p_x = self.om.condition_on_z_and_observations(
+    #         z_sample, x_t, observed_dims, unobserved_dims, ux_t=ux_t
+    #     )
+    #     L = jnp.linalg.cholesky(p_x.Sigma)
+    #     x_sample = p_x.mu + jnp.einsum("abc,ac->ab", L, rand_nums_x_t)
+    #     result = z_sample, x_sample
+    #     return z_sample, result
 
-    def sample_trajectory(
-        self,
-        X: jnp.ndarray,
-        observed_dims: jnp.ndarray = None,
-        p0: pdf.GaussianPDF = None,
-        num_samples: int = 1,
-        u_z: jnp.ndarray = None,
-        u_x: jnp.ndarray = None,
-    ) -> Union[jnp.ndarray, jnp.ndarray]:
-        """Samples a trajectories, with fixed observed data dimensions.
+    # def sample_trajectory(
+    #     self,
+    #     X: jnp.ndarray,
+    #     observed_dims: jnp.ndarray = None,
+    #     p0: pdf.GaussianPDF = None,
+    #     num_samples: int = 1,
+    #     u_z: jnp.ndarray = None,
+    #     u_x: jnp.ndarray = None,
+    # ) -> Union[jnp.ndarray, jnp.ndarray]:
+    #     """Samples a trajectories, with fixed observed data dimensions.
 
-        :param X: Data array containing the variabels to condition on, and indicating how long we wish to sample.
-        :type X: jnp.ndarray [T, Dx]
-        :param observed_dims: Dimension that are observed. If none no dimension is observed, defaults to None
-        :type observed_dims: jnp.ndarray, optional [num_observed_dimensions]
-        :param p0: Initial state density. If none, standard normal., defaults to None
-        :type p0: pdf.GaussianPDF, optional
-        :param num_samples: How many trajectories should be sampled, defaults to 1
-        :type num_samples: int, optional
-        :return: Samples of the latent variables, and the unobserved data dimensions.
-        :rtype: Union[jnp.ndarray, jnp.ndarray] [T+1, nums_samples, Dz] [T, nums_samples, num_unobserved_dims]
-        """
-        T = X.shape[0]
-        if u_z is None:
-            u_z = jnp.empty((T, 0))
-        if u_x is None:
-            u_x = jnp.empty((T, 0))
-        if p0 is None:
-            p0 = pdf.GaussianPDF(
-                Sigma=jnp.array([jnp.eye(self.Dz)]), mu=jnp.zeros((1, self.Dz))
-            )
-        if observed_dims is None:
-            unobserved_dims = jnp.arange(self.Dx)
-            num_unobserved_dims = X.shape[1]
-        else:
-            unobserved_dims = jnp.setxor1d(jnp.arange(self.Dx), observed_dims)
-            num_unobserved_dims = len(unobserved_dims)
+    #     :param X: Data array containing the variabels to condition on, and indicating how long we wish to sample.
+    #     :type X: jnp.ndarray [T, Dx]
+    #     :param observed_dims: Dimension that are observed. If none no dimension is observed, defaults to None
+    #     :type observed_dims: jnp.ndarray, optional [num_observed_dimensions]
+    #     :param p0: Initial state density. If none, standard normal., defaults to None
+    #     :type p0: pdf.GaussianPDF, optional
+    #     :param num_samples: How many trajectories should be sampled, defaults to 1
+    #     :type num_samples: int, optional
+    #     :return: Samples of the latent variables, and the unobserved data dimensions.
+    #     :rtype: Union[jnp.ndarray, jnp.ndarray] [T+1, nums_samples, Dz] [T, nums_samples, num_unobserved_dims]
+    #     """
+    #     T = X.shape[0]
+    #     if u_z is None:
+    #         u_z = jnp.empty((T, 0))
+    #     if u_x is None:
+    #         u_x = jnp.empty((T, 0))
+    #     if p0 is None:
+    #         p0 = pdf.GaussianPDF(
+    #             Sigma=jnp.array([jnp.eye(self.sm.Dz)]), mu=jnp.zeros((1, self.sm.Dz))
+    #         )
+    #     if observed_dims is None:
+    #         unobserved_dims = jnp.arange(self.om.Dx)
+    #         num_unobserved_dims = X.shape[1]
+    #     else:
+    #         unobserved_dims = jnp.setxor1d(jnp.arange(self.om.Dx), observed_dims)
+    #         num_unobserved_dims = len(unobserved_dims)
 
-        init = jnp.asarray(p0.sample(num_samples)[:, 0])
-        sample_step = jit(
-            lambda z_old, vars_t: self._sample_step(
-                z_old, vars_t, observed_dims, unobserved_dims
-            )
-        )
-        # TODO: fix this
-        rand_nums_z = objax.random.normal((T, num_samples, self.Dz))
-        rand_nums_x = objax.random.normal((T, num_samples, num_unobserved_dims))
+    #     init = jnp.asarray(p0.sample(num_samples)[:, 0])
+    #     sample_step = jit(
+    #         lambda z_old, vars_t: self._sample_step(
+    #             z_old, vars_t, observed_dims, unobserved_dims
+    #         )
+    #     )
+    #     # TODO: fix this
+    #     rand_nums_z = objax.random.normal((T, num_samples, self.Dz))
+    #     rand_nums_x = objax.random.normal((T, num_samples, num_unobserved_dims))
 
-        _, result = lax.scan(
-            sample_step, init, (rand_nums_z, X, rand_nums_x, u_z[:, None], u_x[:, None])
-        )
-        z_sample, X_sample = result
+    #     _, result = lax.scan(
+    #         sample_step, init, (rand_nums_z, X, rand_nums_x, u_z[:, None], u_x[:, None])
+    #     )
+    #     z_sample, X_sample = result
 
-        return z_sample, X_sample
+    #     return z_sample, X_sample
 
     def get_params(self):
         """Get the parameters of the model.
