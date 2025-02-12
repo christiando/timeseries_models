@@ -26,6 +26,7 @@ import pickle
 import os
 import time
 from typing import Union, Tuple
+from tqdm import tqdm
 
 
 class StateSpaceModel:
@@ -117,6 +118,10 @@ class StateSpaceModel:
         iteration = 0
         llk_list = []
         llk_old = -jnp.inf
+        # instead of print use tqdm
+        
+        pbar = tqdm(total=max_iter, desc="EM Algorithm", dynamic_ncols=True)
+        
         while iteration < max_iter and not converged:
             time_start_total = time.perf_counter()
             smooth_dict, two_step_smooth_dict = self.estep(
@@ -140,20 +145,22 @@ class StateSpaceModel:
             llk_list.append(llk)
             if iteration > 2:
                 converged = self._check_convergence(llk_list[-2], llk, conv_crit)
-            iteration += 1
             llk_old = llk
-            if iteration % 1 == 0:
-                print("Iteration %d - Log likelihood=%.1f" % (iteration, llk_old))
+            # if iteration % 1 == 0:
+            #     print("Iteration %d - Log likelihood=%.1f" % (iteration, llk_old))
             tot_time = time.perf_counter() - time_start_total
-            if timeit:
-                print(
-                    "###################### \n"
-                    + "E-step: Run Time %.1f \n" % etime
-                    + "LLK-func: Run Time %.1f \n" % llk_time
-                    + "M-step: Run Time %.1f \n" % mtime
-                    + "Total: Run Time %.1f \n" % tot_time
-                    + "###################### \n"
-                )
+            # if timeit:
+            #     print(
+            #         "###################### \n"
+            #         + "E-step: Run Time %.1f \n" % etime
+            #         + "LLK-func: Run Time %.1f \n" % llk_time
+            #         + "M-step: Run Time %.1f \n" % mtime
+            #         + "Total: Run Time %.1f \n" % tot_time
+            #         + "###################### \n"
+            #     )
+            pbar.set_postfix(iteration=iteration, log_likelihood=llk, total_time=f"{tot_time:.1f}s")
+            pbar.update(1)
+            iteration += 1
         if not converged:
             print("EM reached the maximal number of iterations.")
         else:
