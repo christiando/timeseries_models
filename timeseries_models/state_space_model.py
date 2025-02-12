@@ -622,9 +622,9 @@ class StateSpaceModel:
                 )[ignore_init_samples:]
             )
         else:
-            for density in predictive_densities:
+            for ibatch, density in enumerate(predictive_densities):
                 llk += jnp.sum(
-                    density.evaluate_ln(X[0, first_prediction_idx:], element_wise=True)[
+                    density.evaluate_ln(X[ibatch, first_prediction_idx:], element_wise=True)[
                         ignore_init_samples:
                     ]
                 )
