@@ -104,7 +104,7 @@ This implements a linear+squared exponential mean (LSEM) state model
 ```math
 \mathbf{z}_t = A f(\mathbf{z}_{t-1}) + b + \zeta_t,
 ```
-with $`zeta_t \sim N(0,\Sigma_z)`$. The feature function is 
+with $`\zeta_t \sim N(0,\Sigma_z)`$. The feature function is 
 ```math
 f(\mathbf{z}) = (z_0, z_1,...,z_m, k(h_1(\mathbf{z}))),...,k(h_n(\mathbf{z}))).
 ```
@@ -158,7 +158,7 @@ Non-linearity has the same form of $f$ in `LRBFMStateModel`.
 
 # Citation
 
-The library was mainly developed for the [publication](https://doi.org/10.1016/j.ijforecast.2025.01.00). If you use the library please cite
+The library was mainly developed for the [publication](https://doi.org/10.1016/j.ijforecast.2025.01.002). If you use the library please cite
 
 ```
 @article{DONNER2025,
