@@ -2,7 +2,6 @@ __author__ = "Christian Donner"
 from jax import numpy as jnp
 import jax
 from jax import vmap, jit, random, lax
-import haiku as hk
 from typing import Tuple
 from gaussian_toolbox.utils.jax_minimize_wrapper import minimize
 
@@ -364,223 +363,223 @@ class LinearStateModel(StateModel):
         return model
 
 
-class NNControlStateModel(LinearStateModel):
-    r"""Model with linear state equation
+# TODO: Remove haiku dependency
+# class NNControlStateModel(LinearStateModel):
+#     r"""Model with linear state equation
 
-    .. math::
+#     .. math::
 
-        Z_t = A(u_t) Z_{t-1} + b(u_t) + \zeta_t \text{ with } \zeta_t \sim {\cal N}(0,\Sigma_z),
+#         Z_t = A(u_t) Z_{t-1} + b(u_t) + \zeta_t \text{ with } \zeta_t \sim {\cal N}(0,\Sigma_z),
 
-    where the coefficients are output of a neural network, which gets control variables u as input.
+#     where the coefficients are output of a neural network, which gets control variables u as input.
 
-    :param Dz: Dimension of latent space
-    :type Dz: int
-    :param Du: Dimension of control variables.
-    :type Du: int
-    :param noise_z: Initial state noise, defaults to 1
-    :type noise_z: float, optional
-    :param hidden_units: List of number of hidden units in each layer, defaults to [16,]
-    :type hidden_units: list, optional
-    :param non_linearity: Which non-linearity between layers, defaults to objax.functional.tanh
-    :type non_linearity: callable, optional
-    :param lr: Learning rate for learning the network, defaults to 1e-4
-    :type lr: float, optional
-    """
+#     :param Dz: Dimension of latent space
+#     :type Dz: int
+#     :param Du: Dimension of control variables.
+#     :type Du: int
+#     :param noise_z: Initial state noise, defaults to 1
+#     :type noise_z: float, optional
+#     :param hidden_units: List of number of hidden units in each layer, defaults to [16,]
+#     :type hidden_units: list, optional
+#     :param non_linearity: Which non-linearity between layers, defaults to objax.functional.tanh
+#     :type non_linearity: callable, optional
+#     :param lr: Learning rate for learning the network, defaults to 1e-4
+#     :type lr: float, optional
+#     """
 
-    def __init__(
-        self,
-        Dz: int,
-        Du: int,
-        control_func: hk.Module = None,
-        noise_z: float = 1,
-        lr: float = 1e-4,
-    ):
-        self.Dz = Dz
-        self.Qz = noise_z**2 * jnp.eye(self.Dz)
-        self.Lz = self.mat_to_cholvec(self.Qz)
-        self.Du = Du
-        self.control_func_hk = self._setup_control_func(control_func)
-        dummy_input = jnp.ones([1, Du])
-        rng_key = random.PRNGKey(42)
-        self.net_params = self.control_func_hk.init(rng_key, dummy_input)
-        callable_control_func = lambda x: self.control_func_hk.apply(self.net_params, x)
-        self.state_density = conditional.NNControlGaussianConditional(
-            Sigma=jnp.array([self.Qz]),
-            num_cond_dim=self.Dz,
-            num_control_dim=self.Du,
-            control_func=callable_control_func,
-        )
-        self.lr = lr
+#     def __init__(
+#         self,
+#         Dz: int,
+#         Du: int,
+#         control_func: hk.Module = None,
+#         noise_z: float = 1,
+#         lr: float = 1e-4,
+#     ):
+#         self.Dz = Dz
+#         self.Qz = noise_z**2 * jnp.eye(self.Dz)
+#         self.Lz = self.mat_to_cholvec(self.Qz)
+#         self.Du = Du
+#         self.control_func_hk = self._setup_control_func(control_func)
+#         dummy_input = jnp.ones([1, Du])
+#         rng_key = random.PRNGKey(42)
+#         self.net_params = self.control_func_hk.init(rng_key, dummy_input)
+#         callable_control_func = lambda x: self.control_func_hk.apply(self.net_params, x)
+#         self.state_density = conditional.NNControlGaussianConditional(
+#             Sigma=jnp.array([self.Qz]),
+#             num_cond_dim=self.Dz,
+#             num_control_dim=self.Du,
+#             control_func=callable_control_func,
+#         )
+#         self.lr = lr
 
-    def _setup_control_func(self, control_func: callable) -> hk.Module:
-        if control_func == None:
-            control_func = hk.transform(
-                lambda x: hk.nets.MLP(
-                    [10, self.Dz * (self.Dz + 1)],
-                    activation=jax.nn.tanh,
-                    w_init=jnp.zeros,
-                )(x)
-            )
-        control_func = hk.without_apply_rng(control_func)
-        return control_func
+#     def _setup_control_func(self, control_func: callable) -> hk.Module:
+#         if control_func == None:
+#             control_func = hk.transform(
+#                 lambda x: hk.nets.MLP(
+#                     [10, self.Dz * (self.Dz + 1)],
+#                     activation=jax.nn.tanh,
+#                     w_init=jnp.zeros,
+#                 )(x)
+#             )
+#         control_func = hk.without_apply_rng(control_func)
+#         return control_func
 
-    def update_hyperparameters(
-        self,
-        smooth_dict: dict,
-        two_step_smooth_dict: dict,
-        control_z: jnp.ndarray,
-        **kwargs
-    ):
-        """Update hyperparameters.
+#     def update_hyperparameters(
+#         self,
+#         smooth_dict: dict,
+#         two_step_smooth_dict: dict,
+#         control_z: jnp.ndarray,
+#         **kwargs
+#     ):
+#         """Update hyperparameters.
 
-        The densities :math:`p(Z_t|X_{1:T})` and :math:`p(Z_{t+1}, Z_t|X_{1:T})` need to be provided (the latter for the cross-terms.)
+#         The densities :math:`p(Z_t|X_{1:T})` and :math:`p(Z_{t+1}, Z_t|X_{1:T})` need to be provided (the latter for the cross-terms.)
 
-        :param smoothing_density: The smoothing density :math:`p(Z_t|X_{1:T})`.
-        :type smoothing_density: pdf.GaussianPDF
-        :param two_step_smoothing_density: The two point smoothing density :math:`p(Z_{t+1}, Z_t|X_{1:T})`.
-        :type two_step_smoothing_density: pdf.GaussianPDF
-        :param u: Control variables. Dimensions should be [T, Du]
-        :type u: jnp.ndarray
-        """
-        self._update_network_params(
-            smooth_dict, two_step_smooth_dict, control_z, **kwargs
-        )
-        self.Qz = self._update_Qz(two_step_smooth_dict, control_z, **kwargs)
-        self.Lz = self.mat_to_cholvec(self.Qz)
-        self.update_state_density()
+#         :param smoothing_density: The smoothing density :math:`p(Z_t|X_{1:T})`.
+#         :type smoothing_density: pdf.GaussianPDF
+#         :param two_step_smoothing_density: The two point smoothing density :math:`p(Z_{t+1}, Z_t|X_{1:T})`.
+#         :type two_step_smoothing_density: pdf.GaussianPDF
+#         :param u: Control variables. Dimensions should be [T, Du]
+#         :type u: jnp.ndarray
+#         """
+#         self._update_network_params(
+#             smooth_dict, two_step_smooth_dict, control_z, **kwargs
+#         )
+#         self.Qz = self._update_Qz(two_step_smooth_dict, control_z, **kwargs)
+#         self.Lz = self.mat_to_cholvec(self.Qz)
+#         self.update_state_density()
 
-    def update_state_density(self):
-        """Update the state density."""
-        callable_control_func = lambda x: self.control_func_hk.apply(self.net_params, x)
-        self.state_density.control_func = callable_control_func
-        self.state_density.update_Sigma(jnp.array([self.Qz]))
+#     def update_state_density(self):
+#         """Update the state density."""
+#         callable_control_func = lambda x: self.control_func_hk.apply(self.net_params, x)
+#         self.state_density.control_func = callable_control_func
+#         self.state_density.update_Sigma(jnp.array([self.Qz]))
 
-    def _update_Qz(
-        self, two_step_smooth_dict: pdf.GaussianPDF, control_z: jnp.ndarray, **kwargs
-    ):
-        """Update the transition covariance.
+#     def _update_Qz(
+#         self, two_step_smooth_dict: pdf.GaussianPDF, control_z: jnp.ndarray, **kwargs
+#     ):
+#         """Update the transition covariance.
 
-        :param smoothing_density: The smoothing density :math:`p(Z_t|X_{1:T})`.
-        :type smoothing_density: pdf.GaussianPDF
-        :param two_step_smoothing_density: The two point smoothing density :math:`p(Z_{t+1}, Z_t|X_{1:T})`.
-        :type two_step_smoothing_density: pdf.GaussianPDF
-        :param u: Control variables. Dimensions should be [T, Du]
-        :type u: jnp.ndarray
-        """
-        stats = jit(vmap(self._get_Qz_stats))(two_step_smooth_dict, control_z)
-        T, Qz = self._reduce_batch_dims(stats)
-        return Qz / T
+#         :param smoothing_density: The smoothing density :math:`p(Z_t|X_{1:T})`.
+#         :type smoothing_density: pdf.GaussianPDF
+#         :param two_step_smoothing_density: The two point smoothing density :math:`p(Z_{t+1}, Z_t|X_{1:T})`.
+#         :type two_step_smoothing_density: pdf.GaussianPDF
+#         :param u: Control variables. Dimensions should be [T, Du]
+#         :type u: jnp.ndarray
+#         """
+#         stats = jit(vmap(self._get_Qz_stats))(two_step_smooth_dict, control_z)
+#         T, Qz = self._reduce_batch_dims(stats)
+#         return Qz / T
 
-    def _get_Qz_stats(
-        self,
-        two_step_smooth_dict: pdf.GaussianPDF,
-        control_z: jnp.ndarray,
-    ):
-        two_step_smoothing_density = pdf.GaussianPDF(**two_step_smooth_dict)
-        T = two_step_smoothing_density.R
-        A_u, b_u = self.state_density.get_M_b(control_z)
-        A_tilde = jnp.empty((two_step_smoothing_density.R, self.Dz, 2 * self.Dz))
-        A_tilde = A_tilde.at[:, :, : self.Dz].set(jnp.eye(self.Dz))
-        A_tilde = A_tilde.at[:, :, self.Dz :].set(-A_u)
-        b_tilde = -b_u
-        Qz = jnp.sum(
-            two_step_smoothing_density.integrate(
-                "(Ax+a)(Bx+b)'",
-                A_mat=A_tilde,
-                a_vec=b_tilde,
-                B_mat=A_tilde,
-                b_vec=b_tilde,
-            ),
-            axis=0,
-        )
-        return jnp.array([T]), Qz
+#     def _get_Qz_stats(
+#         self,
+#         two_step_smooth_dict: pdf.GaussianPDF,
+#         control_z: jnp.ndarray,
+#     ):
+#         two_step_smoothing_density = pdf.GaussianPDF(**two_step_smooth_dict)
+#         T = two_step_smoothing_density.R
+#         A_u, b_u = self.state_density.get_M_b(control_z)
+#         A_tilde = jnp.empty((two_step_smoothing_density.R, self.Dz, 2 * self.Dz))
+#         A_tilde = A_tilde.at[:, :, : self.Dz].set(jnp.eye(self.Dz))
+#         A_tilde = A_tilde.at[:, :, self.Dz :].set(-A_u)
+#         b_tilde = -b_u
+#         Qz = jnp.sum(
+#             two_step_smoothing_density.integrate(
+#                 "(Ax+a)(Bx+b)'",
+#                 A_mat=A_tilde,
+#                 a_vec=b_tilde,
+#                 B_mat=A_tilde,
+#                 b_vec=b_tilde,
+#             ),
+#             axis=0,
+#         )
+#         return jnp.array([T]), Qz
 
-    def _update_network_params(
-        self,
-        smooth_dict: dict,
-        two_step_smooth_dict: dict,
-        control_z: jnp.ndarray,
-        **kwargs
-    ):
-        """Update the network parameters by gradient descent.
+#     def _update_network_params(
+#         self,
+#         smooth_dict: dict,
+#         two_step_smooth_dict: dict,
+#         control_z: jnp.ndarray,
+#         **kwargs
+#     ):
+#         """Update the network parameters by gradient descent.
 
-        :param smoothing_density: The smoothing density :math:`p(Z_t|X_{1:T})`.
-        :type smoothing_density: pdf.GaussianPDF
-        :param two_step_smoothing_density: The two point smoothing density :math:`p(Z_{t+1}, Z_t|X_{1:T})`.
-        :type two_step_smoothing_density: pdf.GaussianPDF
-        :param u: Control variables. Dimensions should be [T, Du]
-        :type u: jnp.ndarray
-        """
+#         :param smoothing_density: The smoothing density :math:`p(Z_t|X_{1:T})`.
+#         :type smoothing_density: pdf.GaussianPDF
+#         :param two_step_smoothing_density: The two point smoothing density :math:`p(Z_{t+1}, Z_t|X_{1:T})`.
+#         :type two_step_smoothing_density: pdf.GaussianPDF
+#         :param u: Control variables. Dimensions should be [T, Du]
+#         :type u: jnp.ndarray
+#         """
 
-        def objective(params, smooth_dict, two_step_smooth_dict, control_z) -> float:
-            smoothing_density = pdf.GaussianPDF(**smooth_dict)
-            two_step_smoothing_density = pdf.GaussianPDF(**two_step_smooth_dict)
-            self.state_density.control_func = lambda x: self.control_func_hk.apply(
-                params, x
-            )
-            return -self.compute_Q_function(
-                smoothing_density, two_step_smoothing_density, control_z
-            )
+#         def objective(params, smooth_dict, two_step_smooth_dict, control_z) -> float:
+#             smoothing_density = pdf.GaussianPDF(**smooth_dict)
+#             two_step_smoothing_density = pdf.GaussianPDF(**two_step_smooth_dict)
+#             self.state_density.control_func = lambda x: self.control_func_hk.apply(
+#                 params, x
+#             )
+#             return -self.compute_Q_function(
+#                 smoothing_density, two_step_smoothing_density, control_z
+#             )
 
-        batch_objective = (
-            lambda params, smooth_dict, two_step_smooth_dict, control_z: jnp.mean(
-                vmap(
-                    objective,
-                    in_axes=[
-                        None,
-                        {"Sigma": 0, "mu": 0, "Lambda": 0, "ln_det_Sigma": 0},
-                        {"Sigma": 0, "mu": 0, "Lambda": 0, "ln_det_Sigma": 0},
-                        0,
-                    ],
-                )(params, smooth_dict, two_step_smooth_dict, control_z)
-            )
-        )
-        params = self.net_params
-        result = minimize(
-            batch_objective,
-            params,
-            "L-BFGS-B",
-            args=(smooth_dict, two_step_smooth_dict, control_z),
-        )
-        self.net_params = result.x
+#         batch_objective = (
+#             lambda params, smooth_dict, two_step_smooth_dict, control_z: jnp.mean(
+#                 vmap(
+#                     objective,
+#                     in_axes=[
+#                         None,
+#                         {"Sigma": 0, "mu": 0, "Lambda": 0, "ln_det_Sigma": 0},
+#                         {"Sigma": 0, "mu": 0, "Lambda": 0, "ln_det_Sigma": 0},
+#                         0,
+#                     ],
+#                 )(params, smooth_dict, two_step_smooth_dict, control_z)
+#             )
+#         )
+#         params = self.net_params
+#         result = minimize(
+#             batch_objective,
+#             params,
+#             "L-BFGS-B",
+#             args=(smooth_dict, two_step_smooth_dict, control_z),
+#         )
+#         self.net_params = result.x
 
-    def compute_Q_function(
-        self,
-        smoothing_density: pdf.GaussianPDF,
-        two_step_smoothing_density: pdf.GaussianPDF,
-        control_z: jnp.ndarray,
-        **kwargs
-    ) -> float:
-        r"""Compute state part of the Q-function.
+#     def compute_Q_function(
+#         self,
+#         smoothing_density: pdf.GaussianPDF,
+#         two_step_smoothing_density: pdf.GaussianPDF,
+#         control_z: jnp.ndarray,
+#         **kwargs
+#     ) -> float:
+#         r"""Compute state part of the Q-function.
 
-        .. math::
+#         .. math::
 
-            \sum \mathbb{E}[\ln p(Z_t|Z_{t-1})],
+#             \sum \mathbb{E}[\ln p(Z_t|Z_{t-1})],
 
-        where the expection is over the smoothing density.
+#         where the expection is over the smoothing density.
 
-        :param smoothing_density: Smoothing density :math:`p(Z_t|X_{1:T})`
-        :type smoothing_density: pdf.GaussianPDF
-        :param two_step_smoothing_density: The two point smoothing density  :math:`p(Z_{t+1}, Z_t|X_{1:T})`.
-        :type two_step_smoothing_density: pdf.GaussianPDF
-        :return: Evaluated state part of the Q-function.
-        :rtype: float
-        """
-        state_density = self.state_density.set_control_variable(control_z)
-        return jnp.sum(
-            state_density.integrate_log_conditional(
-                two_step_smoothing_density,
-                p_x=smoothing_density.slice(jnp.arange(0, smoothing_density.R-1)),
-            )
-        )
+#         :param smoothing_density: Smoothing density :math:`p(Z_t|X_{1:T})`
+#         :type smoothing_density: pdf.GaussianPDF
+#         :param two_step_smoothing_density: The two point smoothing density  :math:`p(Z_{t+1}, Z_t|X_{1:T})`.
+#         :type two_step_smoothing_density: pdf.GaussianPDF
+#         :return: Evaluated state part of the Q-function.
+#         :rtype: float
+#         """
+#         state_density = self.state_density.set_control_variable(control_z)
+#         return jnp.sum(
+#             state_density.integrate_log_conditional(
+#                 two_step_smoothing_density,
+#                 p_x=smoothing_density.slice(jnp.arange(0, smoothing_density.R-1)),
+#             )
+#         )
 
-    def get_params(self) -> dict:
-        raise NotImplementedError("Not implemented yet.")
+#     def get_params(self) -> dict:
+#         raise NotImplementedError("Not implemented yet.")
 
-    @classmethod
-    def from_dict(cls, params: dict):
-        raise NotImplementedError("Not implemented yet.")
-
+#     @classmethod
+#     def from_dict(cls, params: dict):
+#         raise NotImplementedError("Not implemented yet.")
 
 class LSEMStateModel(LinearStateModel):
     r"""This implements a linear+squared exponential mean (LSEM) state model
