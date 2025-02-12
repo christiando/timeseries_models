@@ -362,6 +362,7 @@ class LinearStateModel(StateModel):
         model.update_state_density()
         return model
 
+
 # TODO: Remove haiku dependency
 # class NNControlStateModel(LinearStateModel):
 #     r"""Model with linear state equation
@@ -579,7 +580,6 @@ class LinearStateModel(StateModel):
 #     @classmethod
 #     def from_dict(cls, params: dict):
 #         raise NotImplementedError("Not implemented yet.")
-
 
 class LSEMStateModel(LinearStateModel):
     r"""This implements a linear+squared exponential mean (LSEM) state model
