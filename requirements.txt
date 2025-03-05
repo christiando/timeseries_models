@@ -2,3 +2,4 @@ ipykernel
 matplotlib
 pytest
 pytest-cov
+git+https://github.com/christiando/gaussian-toolbox@main#egg=gaussian_toolbox
