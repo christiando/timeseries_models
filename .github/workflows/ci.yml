@@ -18,19 +18,22 @@ jobs:
     - name: Checkout Code
       uses: actions/checkout@v4
 
-    - name: Set up Python
-      uses: actions/setup-python@v5
+    - name: Set up DevContainer
+      uses: devcontainers/ci@v0.2
       with:
-        python-version: '3.10'
+        devcontainer-path: .devcontainer
 
     - name: Install Dependencies
       run: |
+        # Install dependencies inside the devcontainer
         python -m pip install --upgrade pip
         pip install -r requirements.txt
-        pip install pytest
+        pip install pytest pytest-cov
 
     - name: Run Tests
-      run: pytest --cov=timeseries_models --cov-report=xml
+      run: |
+        # Run tests inside the devcontainer
+        pytest --cov=timeseries_models --cov-report=xml
 
     - name: Upload Coverage to Codecov
       uses: codecov/codecov-action@v3
