@@ -34,16 +34,16 @@ class ObservationModel:
     ) -> pdf.GaussianPDF:
         """Calculate filter density.
 
-        p(z_t|x_{1:t}) = p(x_t|z_t)p(z_t|x_{1:t-1}) / p(x_t)
+        Args:
+            prediction_density: Prediction density p(z_t|x_{1:t-1}).
+            x_t: Observation vector. Dimensions should be [1, Dx].
 
-        :param prediction_density: Prediction density p(z_t|x_{1:t-1}).
-        :type prediction_density: pdf.GaussianPDF
-        :param x_t: Observation vector. Dimensions should be [1, Dx].
-        :type x_t: jnp.ndarray
-        :raises NotImplementedError: Must be implemented.
-        :return: Filter density p(z_t|x_{1:t}).
-        :rtype: pdf.GaussianPDF
-        """
+        Raises:
+            NotImplementedError: Must be implemented.
+
+        Returns:
+            Filter density p(z_t|x_{1:t}).
+        """       
         raise NotImplementedError("Filtering for observation model not implemented.")
 
     def update_hyperparameters(
@@ -51,12 +51,13 @@ class ObservationModel:
     ):
         """Update hyperparameters.
 
-        :param smoothing_density: The smoothing density over the latent space.
-        :type smoothing_density: pdf.GaussianPDF
-        :param X: Observations. Dimensions should be [T, Dx]
-        :type X: jnp.ndarray
-        :raises NotImplementedError: Must be implemented.
-        """
+        Args:
+            smoothing_density: The smoothing density over the latent space.
+            X: Observations. Dimensions should be [T, Dx]
+
+        Raises:
+            NotImplementedError: Must be implemented.
+        """        
         raise NotImplementedError(
             "Hyperparameter updates for observation model not implemented."
         )
@@ -64,15 +65,18 @@ class ObservationModel:
     def evalutate_llk(
         self, p_z: pdf.GaussianPDF, X: jnp.ndarray, **kwargs
     ) -> jnp.ndarray:
-        """Compute the log likelihood of data given distribution over latent variables.
-
-        :param p_z: Density over latent variables.
-        :type p_z: pdf.GaussianPDF
-        :param X: Observations. Dimensions should be [T, Dx]
-        :type X: jnp.ndarray
-        :raises NotImplementedError: Must be implemented.
-        :return: Log likelihood
-        :rtype: jnp.ndarray
+        """
+        Compute the log likelihood of data given distribution over latent variables.
+        
+        Args:
+            p_z: Density over latent variables.
+            X: Observations. Dimensions should be [T, Dx]
+            
+        Raises:
+            NotImplementedError: Must be implemented.
+            
+        Returns:
+            Log likelihood
         """
         raise NotImplementedError(
             "Log likelihood not implemented for observation model."
@@ -80,6 +84,13 @@ class ObservationModel:
 
     @staticmethod
     def _reduce_batch_dims(arrs):
+        """Reduce batch dimensions of arrays.
+
+        Args:
+            arrs: List of arrays.
+        Returns:
+            Reduced arrays.
+        """
         return [jnp.sum(arr, axis=0) for arr in arrs]
 
     @abstractmethod
@@ -88,18 +99,28 @@ class ObservationModel:
         raise NotImplementedError("Must be implemented.")
 
     @classmethod
-    def from_dict(cls, params: dict):
-        """Creates an observation model from a dictionary of parameters."""
+    def from_dict(cls, params: dict) -> "ObservationModel":
+        """Creates an observation model from a dictionary of parameters.
+        
+        Args:
+            params: Dictionary of parameters.
+            
+        Raises:
+            NotImplementedError: Must be implemented.
+            
+        Returns:
+            Observation model."""
         raise NotImplementedError("Must be implemented.")
 
     @staticmethod
     def mat_to_cholvec(mat: jnp.ndarray) -> jnp.ndarray:
-        """Converts a lower triangular matrix to a vector.
-
-        :param mat: Lower triangular matrix.
-        :type mat: jnp.ndarray
-        :return: Vectorized lower triangular matrix.
-        :rtype: jnp.ndarray
+        """Convert a lower triangular matrix to a vector.
+        
+        Args:
+            mat: Lower triangular matrix.
+            
+        Returns:
+            Vectorized lower triangular matrix.
         """
         L = jnp.linalg.cholesky(mat)
         vec = L[jnp.tril_indices_from(L)]
@@ -107,21 +128,26 @@ class ObservationModel:
 
     @staticmethod
     def cholvec_to_mat(vec: jnp.ndarray, n_dim: int) -> jnp.ndarray:
-        """Converts a vectorized lower triangular matrix to a matrix.
+        """Convert a vectorized lower triangular matrix to a matrix.
 
-        :param vec: Vectorized lower triangular matrix.
-        :type vec: jnp.ndarray
-        :param n_dim: Dimensionality of matrix.
-        :type n_dim: int
-        :return: Matrix.
-        :rtype: jnp.ndarray
-        """
+        Args:
+            vec: Vectorized lower triangular matrix.
+            n_dim: Dimensionality of matrix.
+
+        Returns:
+            Matrix.
+        """        
         L = jnp.zeros((n_dim, n_dim))
         M = L.at[jnp.tril_indices_from(L)].set(vec)
         return M @ M.T
 
 
 class LinearObservationModel(ObservationModel):
+    """This class implements a linear observation model, where the observations are generated as
+    
+        x_t = C z_t + d + xi_t     with      xi_t ~ N(0,Qx).
+    """    
+    
     def __init__(
         self,
         Dx: int,
@@ -130,17 +156,17 @@ class LinearObservationModel(ObservationModel):
         delta: float = 0,
         key=random.PRNGKey(0),
     ):
-        """This class implements a linear observation model, where the observations are generated as
+        """Initializes a linear observation model.
+        
+        
 
-            x_t = C z_t + d + xi_t     with      xi_t ~ N(0,Qx).
-
-        :param Dx: Dimensionality of observations.
-        :type Dx: int
-        :param Dz: Dimensionality of latent space.
-        :type Dz: int
-        :param noise_x: Intial isoptropic std. on the observations., defaults to 1.0
-        :type noise_x: float, optional
-        """
+        Args:
+            Dx: Dimensionality of observations.
+            Dz: Dimensionality of latent space.
+            noise_x: Intial isoptropic std. on the observations. Defaults to 1.0
+            delta: Regularization parameter for Qx. Defaults to 0
+            key: Random key. Defaults to random.PRNGKey(0).
+        """        
         self.Dx, self.Dz = Dx, Dz
         if Dx == Dz:
             self.C = jnp.eye(Dx)
@@ -157,17 +183,15 @@ class LinearObservationModel(ObservationModel):
     def filtering(
         self, prediction_density: pdf.GaussianPDF, x_t: jnp.ndarray, **kwargs
     ) -> pdf.GaussianPDF:
-        """_"Calculate filter density.
+        """Calculate filter density.
 
-        p(z_t|x_{1:t}) = p(x_t|z_t)p(z_t|x_{1:t-1}) / p(x_t)
+        Args:
+            prediction_density: Prediction density p(z_t|x_{1:t-1).
+            x_t: Observation vector. Dimensions should be [1, Dx].
 
-        :param prediction_density: Prediction density p(z_t|x_{1:t-1}).
-        :type prediction_density: pdf.GaussianPDF
-        :param x_t: Observation vector. Dimensions should be [1, Dx].
-        :type x_t: jnp.ndarray
-        :return: Filter density p(z_t|x_{1:t}).
-        :rtype: pdf.GaussianPDF
-        """
+        Returns:
+            Filter density p(z_t|x_{1:t}).
+        """        
         # p(z_t| x_t, x_{1:t-1})
         p_z_given_x = self.observation_density.affine_conditional_transformation(
             prediction_density
@@ -185,15 +209,14 @@ class LinearObservationModel(ObservationModel):
     ) -> pdf.GaussianPDF:
         """Calculate the filtering density for incomplete data, i.e. some fixed dimension are not observed.
 
-        :param prediction_density: Prediction density p(z_t|x_{1:t-1}).
-        :type prediction_density: pdf.GaussianPDF
-        :param x_t: Observation vector. Dimensions should be [1, Dx]. Not observed values should be nans.
-        :type x_t: jnp.ndarray
-        :param observed_dims: Dimensions that are observed. If non empty set., defaults to None
-        :type observed_dims: jnp.ndarray, optional
-        :return: Filter density p(z_t|x_{1:t}).
-        :rtype: pdf.GaussianPDF
-        """
+        Args:
+            prediction_density: Prediction density p(z_t|x_{1:t-1).
+            x_t: Observation vector. Dimensions should be [1, Dx].
+            observed_dims: Dimensions that are observed. If non empty set. Defaults to None
+
+        Returns:
+            Filter density p(z_t|x_{1:t}).
+        """        
         # In case all data are unobserved
         if observed_dims == None:
             return prediction_density
@@ -227,18 +250,28 @@ class LinearObservationModel(ObservationModel):
     def compute_Q_function(
         self, smoothing_density: pdf.GaussianPDF, X: jnp.ndarray, **kwargs
     ) -> float:
+        """Compute the Q-function for the observation model.
+
+        Args:
+            smoothing_density: The smoothing density over the latent space.
+            X: Observations. Dimensions should be [T, Dx]
+
+        Returns:
+            Value of the Q-function.
+        """        
         return jnp.sum(
             self.observation_density.integrate_log_conditional_y(smoothing_density, y=X)
         )
 
     def update_hyperparameters(self, X: jnp.ndarray, smooth_dict: dict, **kwargs):
         """Update hyperparameters.
-
-        :param smoothing_density: The smoothing density over the latent space.
-        :type smoothing_density: pdf.GaussianPDF
-        :param X: Observations. Dimensions should be [T, Dx]
-        :type X: jnp.ndarray
-        :raises NotImplementedError: Must be implemented.
+        
+        Args:
+            smoothing_density: The smoothing density over the latent space.
+            X: Observations. Dimensions should be [T, Dx]
+            
+        Raises:
+            NotImplementedError: Must be implemented.
         """
         self.C = jit(self._update_C)(X, smooth_dict)
         self.Qx = jit(self._update_Qx)(X, smooth_dict)
@@ -250,12 +283,13 @@ class LinearObservationModel(ObservationModel):
     def _update_C(self, X, smooth_dict: pdf.GaussianPDF):
         """Update observation matrix.
 
-        :param smoothing_density: The smoothing density over the latent space.
-        :type smoothing_density: pdf.GaussianPDF
-        :param X: Observations. Dimensions should be [T, Dx]
-        :type X: jnp.ndarray
-        :raises NotImplementedError: Must be implemented.
-        """
+        Args:
+            X: Observations. Dimensions should be [T, Dx]
+            smooth_dict: The smoothing density over the latent space.
+
+        Returns:
+            Updated observation matrix.
+        """        
         stats = vmap(self._get_C_stats)(X, smooth_dict)
         A, b = self._reduce_batch_dims(stats)
         #C_new = jnp.linalg.solve(A, b).T
@@ -264,7 +298,16 @@ class LinearObservationModel(ObservationModel):
         C_new = jnp.dot(b.T, A_inv)
         return C_new
 
-    def _get_C_stats(self, X: jnp.ndarray, smooth_dict: dict):
+    def _get_C_stats(self, X: jnp.ndarray, smooth_dict: dict) -> Tuple[jnp.ndarray]:
+        """Compute statistics for updating the observation matrix.
+
+        Args:
+            X: Observations. Dimensions should be [T, Dx]
+            smooth_dict: The smoothing density over the latent space.
+
+        Returns:
+            Statistics for updating the observation matrix.
+        """        
         smoothing_density = pdf.GaussianPDF(**smooth_dict)
         Ezz = jnp.sum(smoothing_density.integrate("xx'")[:], axis=0)
         #Ez = smoothing_density.integrate("x")[:]
@@ -273,21 +316,31 @@ class LinearObservationModel(ObservationModel):
         zx = jnp.sum(Ez[:, :, None] * (X[:, None] - self.d[None]), axis=0)
         return Ezz, zx
 
-    def _update_Qx(self, X: jnp.ndarray, smooth_dict: dict):
+    def _update_Qx(self, X: jnp.ndarray, smooth_dict: dict) -> jnp.ndarray:
         """Update observation covariance matrix.
 
-        :param smoothing_density: The smoothing density over the latent space.
-        :type smoothing_density: pdf.GaussianPDF
-        :param X: Observations. Dimensions should be [T, Dx]
-        :type X: jnp.ndarray
-        :raises NotImplementedError: Must be implemented.
-        """
+        Args:
+            X: Observations. Dimensions should be [T, Dx]
+            smooth_dict: The smoothing density over the latent space.
+
+        Returns:
+            Updated observation covariance matrix.
+        """        
         stats = vmap(self._get_Qx_stats)(X, smooth_dict)
         T, Qx = self._reduce_batch_dims(stats)
         #Qx = 0.5 * (Qx + Qx.T) / T
         return Qx / T
 
-    def _get_Qx_stats(self, X, smooth_dict):
+    def _get_Qx_stats(self, X, smooth_dict) -> Tuple[jnp.ndarray]:
+        """Compute statistics for updating the observation covariance matrix.
+        
+        Args:
+            X: Observations. Dimensions should be [T, Dx]
+            smooth_dict: The smoothing density over the latent space.
+            
+        Returns:
+            Statistics for updating the observation covariance matrix.
+        """
         smoothing_density = pdf.GaussianPDF(**smooth_dict)
         T = X.shape[0]
         A = -self.C
@@ -300,21 +353,31 @@ class LinearObservationModel(ObservationModel):
         )
         return jnp.array([T]), Qx
 
-    def _update_d(self, X: jnp.ndarray, smooth_dict: dict):
+    def _update_d(self, X: jnp.ndarray, smooth_dict: dict) -> jnp.ndarray:
         """Update observation offset.
+        
+        Args:
+            X: Observations. Dimensions should be [T, Dx] 
+            smooth_dict: The smoothing density over the latent space.
 
-        :param smoothing_density: The smoothing density over the latent space.
-        :type smoothing_density: pdf.GaussianPDF
-        :param X: Observations. Dimensions should be [T, Dx]
-        :type X: jnp.ndarray
-        :raises NotImplementedError: Must be implemented.
-        """
+        Returns:
+            Updated observation offset.
+        """        
         stats = vmap(self._get_d_stats)(X, smooth_dict)
         T, diff_d = self._reduce_batch_dims(stats)
         d = diff_d / T
         return d
 
-    def _get_d_stats(self, X: jnp.array, smooth_dict):
+    def _get_d_stats(self, X: jnp.array, smooth_dict) -> Tuple[jnp.ndarray]:
+        """Compute statistics for updating the observation offset. 
+        
+        Args:
+            X: Observations. Dimensions should be [T, Dx]
+            smooth_dict: The smoothing density over the latent space.
+            
+        Returns:
+            Statistics for updating the observation offset.
+        """
         smoothing_density = pdf.GaussianPDF(**smooth_dict)
         T = X.shape[0]
         diff_d = jnp.sum(X - jnp.dot(smoothing_density.mu[:], self.C.T), axis=0)
@@ -331,7 +394,15 @@ class LinearObservationModel(ObservationModel):
             self.observation_density.ln_det_Sigma[0],
         )
 
-    def get_data_density(self, p_z: pdf.GaussianPDF, **kwargs):
+    def get_data_density(self, p_z: pdf.GaussianPDF, **kwargs) -> pdf.GaussianPDF:
+        """Returns the density p(x|z).
+        
+        Args:
+            p_z: Density over latent space.
+            
+        Returns:
+            Density over observations.
+        """
         return self.observation_density.affine_marginal_transformation(p_z)
 
     def condition_on_z_and_observations(
@@ -344,17 +415,15 @@ class LinearObservationModel(ObservationModel):
     ) -> pdf.GaussianPDF:
         """Returns the density p(x_unobserved|X_observed=x, Z=z).
 
-        :param z_sample: Values of latent variable
-        :type z_sample: jnp.ndarray
-        :param x_t: Data.
-        :type x_t: jnp.ndarray
-        :param observed_dims: Observed dimension
-        :type observed_dims: jnp.ndarray
-        :param unobserved_dims: Unobserved dimensions.
-        :type unobserved_dims: jnp.ndarray
-        :return: The density over unobserved dimensions.
-        :rtype: pdf.GaussianPDF
-        """
+        Args:
+            z_sample: Values of latent variable
+            x_t: Data.
+            observed_dims: Observed dimension
+            unobserved_dims: Unobserved dimensions.
+
+        Returns:
+            The density over unobserved dimensions.
+        """        
         p_x = self.observation_density.condition_on_x(z_sample)
         if observed_dims != None:
             p_x = p_x.condition_on_explicit(observed_dims, unobserved_dims)
@@ -365,7 +434,15 @@ class LinearObservationModel(ObservationModel):
         return {"C": self.C, "d": self.d, "Lx": self.Lx}
 
     @classmethod
-    def from_dict(cls, params: dict):
+    def from_dict(cls, params: dict) -> "LinearObservationModel":
+        """Creates a linear observation model from a dictionary of parameters.
+
+        Args:
+            params: Dictionary of parameters.
+
+        Returns:
+            Linear observation model.
+        """        
         Dx, Dz = params["C"].shape
         model = cls(Dx, Dz)
         model.C = params["C"]
@@ -377,6 +454,19 @@ class LinearObservationModel(ObservationModel):
 
 
 class LSEMObservationModel(LinearObservationModel):
+    """This class implements a linear+squared exponential mean (LSEM) observation model, where the observations are generated as
+    
+        x_t = C phi(z_t) + d + xi_t     with      xi_t ~ N(0,Qx).
+        
+        The feature function is
+        
+        phi(x) = (x_0, x_1,...,x_m, k(h_1(x))),...,k(h_n(x))).
+        
+        The kernel and linear activation function are given by
+        
+        k(h) = exp(-h^2 / 2) and h_i(x) = w_i'x + w_{i,0}.
+    """
+    
     def __init__(
         self,
         Dx: int,
@@ -386,29 +476,16 @@ class LSEMObservationModel(LinearObservationModel):
         lambda_W: float = 0.0,
         key: random.PRNGKey = random.PRNGKey(0),
     ):
-        """
-        This implements a linear+squared exponential mean (LSEM) observation model
+        """Initializes a linear+squared exponential mean (LSEM) observation model.
 
-            x_t = C phi(z_{t}) + d + xi_t     with      xi_t ~ N(0,Qx).
-
-            The feature function is
-
-            phi(x) = (x_0, x_1,...,x_m, k(h_1(x))),...,k(h_n(x))).
-
-            The kernel and linear activation function are given by
-
-            k(h) = exp(-h^2 / 2) and h_i(x) = w_i'x + w_{i,0}.
-
-
-        :param Dx: Dimensions of observations.
-        :type Dx: int
-        :param Dz: Dimensions of latent space.
-        :type Dz: int
-        :param Dk: Number of kernels.
-        :type Dk: int
-        :param noise_x: Initial observation noise, defaults to 1.0
-        :type noise_x: float, optional
-        """
+        Args:
+            Dx: Dimensions of observations.
+            Dz: Dimensions of latent space.
+            Dk: Number of kernels.
+            noise_x: Initial observation noise. Defaults to 1.0
+            lambda_W: Regularization parameter for kernel weights. Defaults to 0.0
+            key: Random key. Defaults to random.PRNGKey(0).
+        """        
         self.Dx, self.Dz, self.Dk = Dx, Dz, Dk
         self.Dphi = self.Dk + self.Dz
         self.Qx = noise_x**2 * jnp.eye(self.Dx)
@@ -438,13 +515,12 @@ class LSEMObservationModel(LinearObservationModel):
         )
 
     def update_hyperparameters(self, X: jnp.ndarray, smooth_dict: dict, **kwargs):
-        """Update the hyperparameters C,d,Qx,W.
+        """Update hyperparameters.
 
-        :param smoothing_density: The smoothing density  p(z_t|x_{1:T})
-        :type smoothing_density: pdf.GaussianPDF
-        :param X: Observations.
-        :type X: jnp.ndarray
-        """
+        Args:
+            X: Observations.
+            smooth_dict: The smoothing density over the latent space.
+        """        
         self.C = jit(self._update_C)(X, smooth_dict)
         self.Qx = jit(self._update_Qx)(X, smooth_dict)
         self.Lx = jnp.linalg.cholesky(self.Qx)
@@ -467,7 +543,16 @@ class LSEMObservationModel(LinearObservationModel):
             self.observation_density.ln_det_Sigma[0],
         )
 
-    def _get_Qx_stats(self, X, smooth_dict):
+    def _get_Qx_stats(self, X: jnp.ndarray, smooth_dict: dict) -> Tuple[jnp.ndarray]:
+        """Compute statistics for updating the observation covariance matrix.
+
+        Args:
+            X: Observations. Dimensions should be [T, Dx]
+            smooth_dict: The smoothing density over the latent space.
+
+        Returns:
+            Statistics for updating the observation covariance matrix.
+        """        
         T = X.shape[0]
         smoothing_density = pdf.GaussianPDF(smooth_dict)
         mu_x, Sigma_x = self.observation_density.get_expected_moments(smoothing_density)
@@ -484,23 +569,31 @@ class LSEMObservationModel(LinearObservationModel):
         )
         return jnp.array([T]), Qx
     
-    def _update_C(self, X: jnp.array, smooth_dict: dict):
-        """Update observation observation matrix C and vector d.
+    def _update_C(self, X: jnp.array, smooth_dict: dict) -> jnp.ndarray:
+        """Update observation matrix.
 
-        C* = E[(X - d)phi(z)']E[phi(z)phi(z)']^{-1}
-        d* = E[(X - C phi(x))]
+        Args:
+            X: Observations. Dimensions should be [T, Dx]
+            smooth_dict: The smoothing density over the latent space.
 
-        :param smoothing_density: The smoothing density  p(z_t|x_{1:T})
-        :type smoothing_density: pdf.GaussianPDF
-        :param X: Observations.
-        :type X: jnp.ndarray
-        """
+        Returns:
+            Updated observation matrix.
+        """        
         stats = vmap(self._get_C_stats)(X, smooth_dict)
         T, A, B = self._reduce_batch_dims(stats)
         C = jnp.linalg.solve(A / T, B.T / T).T
         return C
     
-    def _get_C_stats(self, X: jnp.ndarray, smooth_dict: dict):
+    def _get_C_stats(self, X: jnp.ndarray, smooth_dict: dict) -> Tuple[jnp.ndarray]:
+        """Compute statistics for updating the observation matrix.
+        
+        Args:
+            X: Observations. Dimensions should be [T, Dx]
+            smooth_dict: The smoothing density over the latent space.
+            
+        Returns:
+            Statistics for updating the observation matrix.
+        """
         T = X.shape[0]
         smoothing_density = pdf.GaussianPDF(smooth_dict)
         Ex = smoothing_density.integrate("x")
@@ -531,22 +624,30 @@ class LSEMObservationModel(LinearObservationModel):
         return jnp.array([T]), A, B
 
     def _update_d(self, X: jnp.array, smooth_dict: dict):
-        """Update observation observation matrix C and vector d.
+        """Update observation offset.
 
-        C* = E[(X - d)phi(z)']E[phi(z)phi(z)']^{-1}
-        d* = E[(X - C phi(x))]
+        Args:
+            X: Observations. Dimensions should be [T, Dx]
+            smooth_dict: The smoothing density over the latent space.
 
-        :param smoothing_density: The smoothing density  p(z_t|x_{1:T})
-        :type smoothing_density: pdf.GaussianPDF
-        :param X: Observations.
-        :type X: jnp.ndarray
-        """
+        Returns:
+            Updated observation offset.
+        """        
         stats = vmap(self._get_d_stats)(X, smooth_dict)
         T, Ef, sum_X = self._reduce_batch_dims(stats)
         d = (sum_X - jnp.dot(self.C, Ef)) / T
         return d
     
-    def _get_d_stats(self, X: jnp.ndarray, smooth_dict: dict):
+    def _get_d_stats(self, X: jnp.ndarray, smooth_dict: dict) -> Tuple[jnp.ndarray]:
+        """Compute statistics for updating the observation offset.
+
+        Args:
+            X: Observations. Dimensions should be [T, Dx]
+            smooth_dict: The smoothing density over the latent space.
+
+        Returns:
+            Statistics for updating the observation offset.
+        """        
         T = X.shape[0]
         smoothing_density = pdf.GaussianPDF(smooth_dict)
         Ex = smoothing_density.integrate("x")
@@ -565,24 +666,32 @@ class LSEMObservationModel(LinearObservationModel):
         sum_X = jnp.sum(X, axis=0)
         return jnp.array([T]), sum_Ef, sum_X
         
-    def _update_Cd(self, X: jnp.array, smooth_dict: dict):
-        """Update observation observation matrix C and vector d.
+    def _update_Cd(self, X: jnp.array, smooth_dict: dict) -> Tuple[jnp.ndarray]:
+        """Update observation matrix C and vector d.
 
-        C* = E[(X - d)phi(z)']E[phi(z)phi(z)']^{-1}
-        d* = E[(X - C phi(x))]
+        Args:
+            X: Observations.
+            smooth_dict: The smoothing density  p(z_t|x_{1:T})
 
-        :param smoothing_density: The smoothing density  p(z_t|x_{1:T})
-        :type smoothing_density: pdf.GaussianPDF
-        :param X: Observations.
-        :type X: jnp.ndarray
-        """
+        Returns:
+            Updated observation matrix and offset.
+        """        
         stats = vmap(self._get_Cd_stats)(X, smooth_dict)
         T, A, B, Ef, sum_X = self._reduce_batch_dims(stats)
         C = jnp.linalg.solve(A / T, B.T / T).T
         d = (sum_X - jnp.dot(C, Ef)) / T
         return C, d
 
-    def _get_Cd_stats(self, X: jnp.ndarray, smooth_dict: dict):
+    def _get_Cd_stats(self, X: jnp.ndarray, smooth_dict: dict) -> Tuple[jnp.ndarray]:
+        """Compute statistics for updating the observation matrix and offset.
+        
+        Args:
+            X: Observations.
+            smooth_dict: The smoothing density  p(z_t|x_{1:T})  
+            
+        Returns:
+            Statistics for updating the observation matrix and offset.
+        """
         T = X.shape[0]
         smoothing_density = pdf.GaussianPDF(smooth_dict).slice(jnp.arange(1, T + 1))
         Ex = smoothing_density.integrate("x")
@@ -617,12 +726,9 @@ class LSEMObservationModel(LinearObservationModel):
     def _update_kernel_params(self, X: jnp.ndarray, smooth_dict: dict):
         """Update the kernel weights.
 
-        Using gradient descent on the (negative) Q-function.
-
-        :param smoothing_density: The smoothing density  p(z_t|x_{1:T})
-        :type smoothing_density: pdf.GaussianPDF
-        :param X: Observations.
-        :type X: jnp.ndarray
+        Args:
+            X: Observations.   
+            smooth_dict: The smoothing density  p(z_t|x_{1:T})
         """
 
         def objective(W, X, smooth_dict):
@@ -634,26 +740,41 @@ class LSEMObservationModel(LinearObservationModel):
             return -self.compute_Q_function(
                 smoothing_density, X
             )  # + self.lambda_W * jnp.sum(W**2)
-
-        batch_objective = lambda params, X, smooth_dict: jnp.mean(
-            vmap(
-                objective,
-                in_axes=[
-                    None,
-                    0,
-                    {"Sigma": 0, "mu": 0, "Lambda": 0, "ln_det_Sigma": 0},
-                ],
-            )(params, X, smooth_dict)
-        )
+            
+        def batch_objective(params, X, smooth_dict):
+            return jnp.mean(
+                vmap(
+                    objective,
+                    in_axes=[
+                        None,
+                        0,
+                        {"Sigma": 0, "mu": 0, "Lambda": 0, "ln_det_Sigma": 0},
+                    ],
+                )(params, X, smooth_dict)
+            )
         params = self.W
         result = minimize(batch_objective, params, "L-BFGS-B", args=(X, smooth_dict))
         self.W = result.x
 
     def get_params(self) -> dict:
+        """Returns the parameters of the observation model.
+
+        Returns:
+            Dictionary of parameters.
+        """        
         return {"C": self.C, "d": self.d, "Qx": self.Qx, "W": self.W}
 
     @classmethod
-    def from_dict(cls, params: dict):
+    def from_dict(cls, params: dict) -> "LSEMObservationModel":
+        """Creates a LSEM observation model from a dictionary of parameters.
+        
+        Args:
+            params: Dictionary of parameters.
+            
+        Returns:
+            LSEM observation model.
+        """
+        
         Dx = params["C"].shape[0]
         Dz = params["C"].shape[1] - Dx
         Dk = params["W"].shape[0]
@@ -668,6 +789,18 @@ class LSEMObservationModel(LinearObservationModel):
 
 
 class LRBFMObservationModel(LSEMObservationModel):
+    """This class implements a linear+RBF mean (LRBFM) observation model, where the observations are generated as
+    
+        x_t = C phi(z_t) + d + xi_t     with      xi_t ~ N(0,Qx).
+        
+        The feature function is
+        
+        phi(x) = (x_0, x_1,...,x_m, k(h_1(x))),...,k(h_n(x))).
+        
+        The kernel and linear activation function are given by
+        
+        k(h) = exp(-h^2 / 2) and h_i(x) = (x_i + mu_i) / l_i.
+    """
     def __init__(
         self,
         Dx: int,
@@ -677,31 +810,17 @@ class LRBFMObservationModel(LSEMObservationModel):
         kernel_type: bool = "isotropic",
         key=random.PRNGKey(0),
     ):
-        """This implements a linear+RBF mean (LRBFM) observation model
+        """Initializes a linear+RBF mean (LRBFM) observation model.
 
-            x_t = C phi(z_t) + d + xi_t     with      xi_t ~ N(0,Qx).
-
-            The feature function is
-
-            phi(x) = (x_0, x_1,...,x_m, k(h_1(x))),...,k(h_n(x))).
-
-            The kernel and linear activation function are given by
-
-            k(h) = exp(-h^2 / 2) and h_i(x) = (x_i + mu_i) / l_i.
-
-
-        :param Dx: Dimensions of observations.
-        :type Dx: int
-        :param Dz: Dimensionality of latent space.
-        :type Dz: int
-        :param Dk: Number of kernels to use.
-        :type Dk: int
-        :param noise_z: Initial isoptropic std. on the state transition., defaults to 1.0
-        :type noise_z: float, optional
-        :param kernel_type: Parameter determining, which kernel is used. 'scalar' same length scale for all kernels and
-            dimensions. 'isotropic' same length scale for dimensions, but different for each kernel. 'anisotropic'
-            different length scale for all kernels and dimensions., defaults to 'isotropic
-        :type kernel_type: str
+        Args:
+            Dx: Dimensions of observations.
+            Dz: Dimensionality of latent space.
+            Dk: Number of kernels to use.
+            noise_z: Initial isoptropic std. on the state transition. Defaults to 1.0.
+            kernel_type: Parameter determining, which kernel is used. 'scalar' same length scale for all kernels and
+                dimensions. 'isotropic' same length scale for dimensions, but different for each kernel. 'anisotropic'
+                different length scale for all kernels and dimensions. Defaults to 'isotropic'.
+            key: Random key. Defaults to random.PRNGKey(0).
         """
         self.Dx, self.Dz, self.Dk = Dx, Dz, Dk
         self.Dphi = self.Dk + self.Dz
@@ -743,7 +862,8 @@ class LRBFMObservationModel(LSEMObservationModel):
         )
 
     @property
-    def length_scale(self):
+    def length_scale(self) -> jnp.ndarray:
+        """Returns the length scale of the kernel."""
         if self.kernel_type == "scalar":
             return jnp.tile(jnp.exp(self.log_length_scale), (self.Dk, self.Dz))
         elif self.kernel_type == "isotropic":
@@ -768,12 +888,9 @@ class LRBFMObservationModel(LSEMObservationModel):
     def _update_kernel_params(self, X: jnp.ndarray, smooth_dict: dict):
         """Update the kernel weights.
 
-        Using gradient descent on the (negative) Q-function.
-
-        :param smoothing_density: The smoothing density  p(z_t|x_{1:T})
-        :type smoothing_density: pdf.GaussianPDF
-        :param X: Observations.
-        :type X: jnp.ndarray
+        Args:
+            X: Observations.
+            smooth_dict: The smoothing density  p(z_t|x_{1:T})
         """
 
         def objective(params, X, smooth_dict):
@@ -783,23 +900,29 @@ class LRBFMObservationModel(LSEMObservationModel):
             self.observation_density.length_scale = jnp.exp(params["log_length_scale"])
             self.observation_density.update_phi()
             return -self.compute_Q_function(smoothing_density, X)
-
-        batch_objective = lambda params, X, smooth_dict: jnp.mean(
-            vmap(
-                objective,
-                in_axes=[
-                    None,
-                    0,
-                    {"Sigma": 0, "mu": 0, "Lambda": 0, "ln_det_Sigma": 0},
-                ],
-            )(params, X, smooth_dict)
-        )
+        
+        def batch_objective(params, X, smooth_dict):
+            return jnp.mean(
+                vmap(
+                    objective,
+                    in_axes=[
+                        None,
+                        0,
+                        {"Sigma": 0, "mu": 0, "Lambda": 0, "ln_det_Sigma": 0},
+                    ],
+                )(params, X, smooth_dict)
+            )
         params = {"mu": self.mu, "log_length_scale": self.log_length_scale}
         result = minimize(batch_objective, params, "L-BFGS-B", args=(X, smooth_dict))
         self.mu = result.x["mu"]
         self.log_length_scale = result.x["log_length_scale"]
 
     def get_params(self) -> dict:
+        """Returns the parameters of the observation model.
+        
+        Returns:
+            Dictionary of parameters.
+        """
         return {
             "C": self.C,
             "d": self.d,
@@ -809,7 +932,15 @@ class LRBFMObservationModel(LSEMObservationModel):
         }
 
     @classmethod
-    def from_dict(cls, params: dict):
+    def from_dict(cls, params: dict) -> "LRBFMObservationModel":
+        """Creates a LRBFM observation model from a dictionary of parameters.
+        
+        Args:
+            params: Dictionary of parameters.
+            
+        Returns:
+            LRBFM observation model.
+        """
         Dx = params["C"].shape[0]
         Dk = params["mu"].shape[0]
         Dz = params["C"].shape[1] - Dk
