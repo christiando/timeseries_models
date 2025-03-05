@@ -708,7 +708,7 @@ class LRBFMObservationModel(LSEMObservationModel):
         self.Qx = noise_z**2 * jnp.eye(self.Dx)
         self.Lx = jnp.linalg.cholesky(self.Qx)
         key, subkey = random.split(key)
-        self.C = random.normal(subkey(self.Dx, self.Dphi))
+        self.C = random.normal(subkey, (self.Dx, self.Dphi))
         if self.Dx == self.Dz:
             self.C = self.C.at[:, : self.Dz].set(jnp.eye(self.Dx))
         else:
