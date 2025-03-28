@@ -1,19 +1,16 @@
 __author__ = "Christian Donner"
-import scipy
 from typing import Tuple
-from scipy.optimize import minimize_scalar
 from jax import numpy as jnp
-from jax import scipy as jsc
 
 # import numpy as np
-from jax import lax
-from jax import jit, grad, vmap
+from jax import vmap
 from gaussian_toolbox import (
     pdf,
     conditional,
     approximate_conditional,
 )
-from gaussian_toolbox.utils.jax_minimize_wrapper import minimize
+from timeseries_models.utils.opt_funcs import run_opt
+import optax
 from jax import random
 from abc import abstractmethod
 
@@ -218,7 +215,7 @@ class LinearObservationModel(ObservationModel):
             Filter density p(z_t|x_{1:t}).
         """        
         # In case all data are unobserved
-        if observed_dims == None:
+        if observed_dims is None:
             return prediction_density
         # In case all data are observed
         elif len(observed_dims) == self.Dx:
@@ -273,10 +270,10 @@ class LinearObservationModel(ObservationModel):
         Raises:
             NotImplementedError: Must be implemented.
         """
-        self.C = jit(self._update_C)(X, smooth_dict)
-        self.Qx = jit(self._update_Qx)(X, smooth_dict)
+        self.C = self._update_C(X, smooth_dict)
+        self.Qx = self._update_Qx(X, smooth_dict)
         self.Lx = self.mat_to_cholvec(self.Qx)
-        self.d = jit(self._update_d)(X, smooth_dict)
+        self.d = self._update_d(X, smooth_dict)
         #self.C, self.d, self.Qx = C, d, Qx
         self.update_observation_density()
 
@@ -425,7 +422,7 @@ class LinearObservationModel(ObservationModel):
             The density over unobserved dimensions.
         """        
         p_x = self.observation_density.condition_on_x(z_sample)
-        if observed_dims != None:
+        if observed_dims is not None:
             p_x = p_x.condition_on_explicit(observed_dims, unobserved_dims)
             p_x = p_x.condition_on_x(x_t[observed_dims][None])
         return p_x
@@ -521,10 +518,10 @@ class LSEMObservationModel(LinearObservationModel):
             X: Observations.
             smooth_dict: The smoothing density over the latent space.
         """        
-        self.C = jit(self._update_C)(X, smooth_dict)
-        self.Qx = jit(self._update_Qx)(X, smooth_dict)
+        self.C = self._update_C(X, smooth_dict)
+        self.Qx = self._update_Qx(X, smooth_dict)
         self.Lx = jnp.linalg.cholesky(self.Qx)
-        self.d = jit(self._update_d)(X, smooth_dict)
+        self.d = self._update_d(X, smooth_dict)
         #self.C, self.d = jit(self._update_Cd)(X, smooth_dict)
         self.update_observation_density()
         self._update_kernel_params(X, smooth_dict)
@@ -732,7 +729,6 @@ class LSEMObservationModel(LinearObservationModel):
         """
 
         def objective(W, X, smooth_dict):
-            T = X.shape[0]
             smoothing_density = pdf.GaussianPDF(**smooth_dict)
             self.observation_density.w0 = W[:, 0]
             self.observation_density.W = W[:, 1:]
@@ -741,7 +737,7 @@ class LSEMObservationModel(LinearObservationModel):
                 smoothing_density, X
             )  # + self.lambda_W * jnp.sum(W**2)
             
-        def batch_objective(params, X, smooth_dict):
+        def batch_objective(params):
             return jnp.mean(
                 vmap(
                     objective,
@@ -753,8 +749,12 @@ class LSEMObservationModel(LinearObservationModel):
                 )(params, X, smooth_dict)
             )
         params = self.W
-        result = minimize(batch_objective, params, "L-BFGS-B", args=(X, smooth_dict))
-        self.W = result.x
+        opt = optax.lbfgs()
+        #result = minimize(batch_objective, params, "L-BFGS-B", args=(X, smooth_dict))
+        #self.W = result.x
+        opt_params, _ = run_opt(params, batch_objective, opt, tol=1e-5, max_iter=100)
+        self.W = opt_params
+        
 
     def get_params(self) -> dict:
         """Returns the parameters of the observation model.
@@ -762,7 +762,7 @@ class LSEMObservationModel(LinearObservationModel):
         Returns:
             Dictionary of parameters.
         """        
-        return {"C": self.C, "d": self.d, "Qx": self.Qx, "W": self.W}
+        return {"C": self.C, "d": self.d, "Lx": self.Lx, "W": self.W}
 
     @classmethod
     def from_dict(cls, params: dict) -> "LSEMObservationModel":
@@ -776,8 +776,8 @@ class LSEMObservationModel(LinearObservationModel):
         """
         
         Dx = params["C"].shape[0]
-        Dz = params["C"].shape[1] - Dx
         Dk = params["W"].shape[0]
+        Dz = params["C"].shape[1] - Dk
         model = cls(Dx, Dz, Dk)
         model.C = params["C"]
         model.d = params["d"]
@@ -806,7 +806,7 @@ class LRBFMObservationModel(LSEMObservationModel):
         Dx: int,
         Dz: int,
         Dk: int,
-        noise_z: float = 1.0,
+        noise_x: float = 1.0,
         kernel_type: bool = "isotropic",
         key=random.PRNGKey(0),
     ):
@@ -824,7 +824,7 @@ class LRBFMObservationModel(LSEMObservationModel):
         """
         self.Dx, self.Dz, self.Dk = Dx, Dz, Dk
         self.Dphi = self.Dk + self.Dz
-        self.Qx = noise_z**2 * jnp.eye(self.Dx)
+        self.Qx = noise_x**2 * jnp.eye(self.Dx)
         self.Lx = jnp.linalg.cholesky(self.Qx)
         key, subkey = random.split(key)
         self.C = random.normal(subkey, (self.Dx, self.Dphi))
@@ -894,14 +894,13 @@ class LRBFMObservationModel(LSEMObservationModel):
         """
 
         def objective(params, X, smooth_dict):
-            T = X.shape[0]
             smoothing_density = pdf.GaussianPDF(**smooth_dict)
             self.observation_density.mu = params["mu"]
             self.observation_density.length_scale = jnp.exp(params["log_length_scale"])
             self.observation_density.update_phi()
             return -self.compute_Q_function(smoothing_density, X)
         
-        def batch_objective(params, X, smooth_dict):
+        def batch_objective(params):
             return jnp.mean(
                 vmap(
                     objective,
@@ -913,9 +912,13 @@ class LRBFMObservationModel(LSEMObservationModel):
                 )(params, X, smooth_dict)
             )
         params = {"mu": self.mu, "log_length_scale": self.log_length_scale}
-        result = minimize(batch_objective, params, "L-BFGS-B", args=(X, smooth_dict))
-        self.mu = result.x["mu"]
-        self.log_length_scale = result.x["log_length_scale"]
+        #result = minimize(batch_objective, params, "L-BFGS-B", args=(X, smooth_dict))
+        #self.mu = result.x["mu"]
+        #self.log_length_scale = result.x["log_length_scale"]
+        opt = optax.lbfgs()
+        opt_params, _ = run_opt(params, batch_objective, opt, tol=1e-5, max_iter=100)
+        self.mu = opt_params["mu"]
+        self.log_length_scale = opt_params["log_length_scale"]
 
     def get_params(self) -> dict:
         """Returns the parameters of the observation model.

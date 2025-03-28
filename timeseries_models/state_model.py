@@ -1,9 +1,9 @@
 __author__ = "Christian Donner"
 from jax import numpy as jnp
-import jax
-from jax import vmap, jit, random, lax
+from jax import vmap, jit, random
 from typing import Tuple
-from gaussian_toolbox.utils.jax_minimize_wrapper import minimize
+from timeseries_models.utils.opt_funcs import run_opt
+import optax
 
 from gaussian_toolbox import (
     pdf,
@@ -688,7 +688,7 @@ class LSEMStateModel(LinearStateModel):
         Ekz = jnp.sum(
             two_step_k_measure.integrate("x").reshape((T, self.Dk, 2 * self.Dz)), axis=0
         )
-        Ekz_future, Ekz_past = Ekz[:, : self.Dz], Ekz[:, self.Dz :]
+        Ekz_future, _ = Ekz[:, : self.Dz], Ekz[:, self.Dz :]
         sd_k = smoothing_density.multiply(self.state_density.k_func, update_full=True)
         sd_kk = sd_k.multiply(self.state_density.k_func, update_full=True)
         Ek = jnp.sum(sd_k.integral_light().reshape((T, self.Dk)), axis=0)
@@ -730,7 +730,7 @@ class LSEMStateModel(LinearStateModel):
         Ekz = jnp.sum(
             two_step_k_measure.integrate("x").reshape((T, self.Dk, 2 * self.Dz)), axis=0
         )
-        Ekz_future, Ekz_past = Ekz[:, : self.Dz], Ekz[:, self.Dz :]
+        Ekz_future, _ = Ekz[:, : self.Dz], Ekz[:, self.Dz :]
         sd_k = smoothing_density.multiply(self.state_density.k_func, update_full=True)
         sd_kk = sd_k.multiply(self.state_density.k_func, update_full=True)
         Ek = jnp.sum(sd_k.integral_light().reshape((T, self.Dk)), axis=0)
@@ -855,25 +855,30 @@ class LSEMStateModel(LinearStateModel):
             return -self.compute_Q_function(
                 smoothing_density, two_step_smoothing_density
             ) + 0.5 * self.lambda_W * jnp.sum(W**2)
+            
+            
+        def batch_objective(W):
+            return jnp.mean(
+                vmap(
+                    objective,
+                    in_axes=[
+                        None,
+                        {"Sigma": 0, "mu": 0, "Lambda": 0, "ln_det_Sigma": 0},
+                        {"Sigma": 0, "mu": 0, "Lambda": 0, "ln_det_Sigma": 0},
+                    ],
+                )(W, smooth_dict, two_step_smooth_dict)
+            )
 
-        batch_objective = lambda params, smooth_dict, two_step_smooth_dict: jnp.mean(
-            vmap(
-                objective,
-                in_axes=[
-                    None,
-                    {"Sigma": 0, "mu": 0, "Lambda": 0, "ln_det_Sigma": 0},
-                    {"Sigma": 0, "mu": 0, "Lambda": 0, "ln_det_Sigma": 0},
-                ],
-            )(params, smooth_dict, two_step_smooth_dict)
-        )
         params = self.W
-        result = minimize(
-            batch_objective,
-            params,
-            "L-BFGS-B",
-            args=(smooth_dict, two_step_smooth_dict),
-        )
-        self.W = result.x
+        opt = optax.lbfgs()
+        # result = minimize(
+        #     batch_objective,
+        #     params,
+        #     "L-BFGS-B",
+        #     args=(smooth_dict, two_step_smooth_dict),
+        # )
+        opt_params, _ = run_opt(params, batch_objective, opt, tol=1e-5, max_iter=100)
+        self.W = opt_params
 
     def get_params(self) -> dict:
         return {
@@ -1040,26 +1045,32 @@ class LRBFMStateModel(LSEMStateModel):
             return -self.compute_Q_function(
                 smoothing_density, two_step_smoothing_density
             )
+            
+        def batch_objective(params):
+            return jnp.mean(
+                vmap(
+                    objective,
+                    in_axes=[
+                        None,
+                        {"Sigma": 0, "mu": 0, "Lambda": 0, "ln_det_Sigma": 0},
+                        {"Sigma": 0, "mu": 0, "Lambda": 0, "ln_det_Sigma": 0},
+                    ],
+                )(params, smooth_dict, two_step_smooth_dict)
+            )
 
-        batch_objective = lambda params, smooth_dict, two_step_smooth_dict: jnp.mean(
-            vmap(
-                objective,
-                in_axes=[
-                    None,
-                    {"Sigma": 0, "mu": 0, "Lambda": 0, "ln_det_Sigma": 0},
-                    {"Sigma": 0, "mu": 0, "Lambda": 0, "ln_det_Sigma": 0},
-                ],
-            )(params, smooth_dict, two_step_smooth_dict)
-        )
         params = {"mu": self.mu, "log_length_scale": self.log_length_scale}
-        result = minimize(
-            batch_objective,
-            params,
-            "L-BFGS-B",
-            args=(smooth_dict, two_step_smooth_dict),
-        )
-        self.mu = result.x["mu"]
-        self.log_length_scale = result.x["log_length_scale"]
+        #result = minimize(
+        #    batch_objective,
+        #    params,
+        #    "L-BFGS-B",
+        #    args=(smooth_dict, two_step_smooth_dict),
+        #)
+        #self.mu = result.x["mu"]
+        #self.log_length_scale = result.x["log_length_scale"]
+        opt = optax.lbfgs()
+        opt_params, _ = run_opt(params, batch_objective, opt, tol=1e-5, max_iter=100)
+        self.mu = opt_params["mu"]
+        self.log_length_scale = opt_params["log_length_scale"]
 
     def get_params(self) -> dict:
         return {
