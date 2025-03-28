@@ -2,7 +2,7 @@ __author__ = "Christian Donner"
 from jax import numpy as jnp
 from jax import jit, vmap
 from timeseries_models import observation_model, state_model
-from timeseries_models.utils.em_util_funcs import _estep, _mstep, _predict
+from timeseries_models.utils.em_util_funcs import _estep, _mstep, _predict, _compute_Q_function_batch
 from gaussian_toolbox import pdf
 import pickle
 import os
@@ -248,45 +248,10 @@ class StateSpaceModel:
         X, mu0, Sigma0, control_x, control_z = self._init(
             X, mu0, Sigma0, control_x, control_z
         )
-        Q_batch = jit(vmap(self._compute_Q_function_batch))(
+        Q_batch = _compute_Q_function_batch(self.params, self._init_models,
             X, smooth_dict, two_step_smooth_dict, mu0, Sigma0, control_x, control_z
         )
         return jnp.sum(Q_batch)
-
-    def _compute_Q_function_batch(
-        self,
-        X: jnp.ndarray,
-        smooth_dict: dict,
-        two_step_smooth_dict: dict,
-        mu0: jnp.ndarray,
-        Sigma0: jnp.ndarray,
-        control_x: jnp.ndarray,
-        control_z: jnp.ndarray,
-    ) -> float:
-        r"""Compute Q-function.
-
-        .. math::
-
-            Q(w,w_{\rm old}) = \mathbb{E}\left[\ln p(Z_0\vert w)\right] + \sum_{t=1}^T\mathbb{E}\left[\ln p(X_t\vert Z_t, w)\right] + \sum_{t=1}^T\mathbb{E}\left[\ln p(Z_t\vert Z_{t-1}, w)\right],
-
-        where the expectation is over the smoothing density :math:`q(Z_{0:T}\vert w_{\rm old})`.
-
-        :return: Evluated Q-function.
-        :rtype: float
-        """
-        T = X.shape[0]
-        smoothing_density = pdf.GaussianPDF(**smooth_dict)
-        two_step_smoothing_density = pdf.GaussianPDF(**two_step_smooth_dict)
-        p0 = pdf.GaussianPDF(Sigma=Sigma0, mu=mu0)
-        p0_smoothing = smoothing_density.slice(jnp.array([0]))
-        init_Q = p0_smoothing.integrate("log u(x)", factor=p0).squeeze()
-        sm_Q = self.sm.compute_Q_function(
-            smoothing_density, two_step_smoothing_density, control_z=control_z
-        )
-        #phi = smoothing_density.slice(jnp.arange(0, T))
-        om_Q = self.om.compute_Q_function(smoothing_density, X, control_x=control_x)
-        total_Q = init_Q + sm_Q + om_Q
-        return total_Q
 
     def compute_predictive_log_likelihood(
         self,
