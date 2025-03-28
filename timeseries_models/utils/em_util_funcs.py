@@ -6,6 +6,44 @@ from functools import partial
 from jax import jit, vmap
 
 @partial(jit, static_argnums=(1,))
+@partial(vmap, in_axes=(None, None, 0, 0, 0, 0, 0, 0, 0))
+def _compute_Q_function_batch(
+    params: dict,
+    _init_func: callable,
+    X: jnp.ndarray,
+    smooth_dict: dict,
+    two_step_smooth_dict: dict,
+    mu0: jnp.ndarray,
+    Sigma0: jnp.ndarray,
+    control_x: jnp.ndarray,
+    control_z: jnp.ndarray,
+) -> float:
+    r"""Compute Q-function.
+
+    .. math::
+
+        Q(w,w_{\rm old}) = \mathbb{E}\left[\ln p(Z_0\vert w)\right] + \sum_{t=1}^T\mathbb{E}\left[\ln p(X_t\vert Z_t, w)\right] + \sum_{t=1}^T\mathbb{E}\left[\ln p(Z_t\vert Z_{t-1}, w)\right],
+
+    where the expectation is over the smoothing density :math:`q(Z_{0:T}\vert w_{\rm old})`.
+
+    :return: Evluated Q-function.
+    :rtype: float
+    """
+    sm, om = _init_func(params)
+    smoothing_density = pdf.GaussianPDF(**smooth_dict)
+    two_step_smoothing_density = pdf.GaussianPDF(**two_step_smooth_dict)
+    p0 = pdf.GaussianPDF(Sigma=Sigma0, mu=mu0)
+    p0_smoothing = smoothing_density.slice(jnp.array([0]))
+    init_Q = p0_smoothing.integrate("log u(x)", factor=p0).squeeze()
+    sm_Q = sm.compute_Q_function(
+        smoothing_density, two_step_smoothing_density, control_z=control_z
+    )
+    #phi = smoothing_density.slice(jnp.arange(0, T))
+    om_Q = om.compute_Q_function(smoothing_density, X, control_x=control_x)
+    total_Q = init_Q + sm_Q + om_Q
+    return total_Q
+
+@partial(jit, static_argnums=(1,))
 def _mstep(params: dict,
     _init_func: callable, 
     X, smooth_dict, 
